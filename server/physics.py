@@ -61,7 +61,8 @@ class BipedPhysicsEnv:
         self.j_half = 0.5 * (J_MAX - J_MIN)
 
         self.stage = 0  # 0 = Stand & 4-way Push Recovery, 1 = Walk
-        self.target_speed = 1.25
+        self.target_speed = 1.85
+        self.walk_cadence = 4.8
         self.training_pushes = True
 
         # Per-env telemetry and smoothing buffers
@@ -69,6 +70,7 @@ class BipedPhysicsEnv:
         self.q_cmd = np.tile(J_NOM, (n, 1))
         self.prev_act = np.zeros((n, self.ACT_DIM), dtype=np.float32)
         self.step_count = np.zeros(n, dtype=np.int64)
+        self.walk_phase = np.zeros(n, dtype=np.float32)
         self.foot_contact = np.zeros((n, 2), dtype=np.float32)
         self.last_single_foot = np.zeros(n, dtype=np.int8)
         self.last_step_tick = np.zeros(n, dtype=np.int64)
@@ -114,7 +116,7 @@ class BipedPhysicsEnv:
         d.qpos[self.qpos_ids] = q0
         d.ctrl[:] = q0
         if self.stage == 1 and i > 0:
-            d.qvel[0] = float(np.random.uniform(0.0, 0.45))
+            d.qvel[0] = float(np.random.uniform(0.0, 0.55))
         else:
             d.qvel[0] = float(np.random.uniform(-0.06, 0.06))
         d.qvel[1] = float(np.random.uniform(-0.06, 0.06))
@@ -124,6 +126,7 @@ class BipedPhysicsEnv:
         self.q_cmd[i] = q0.astype(np.float32)
         self.prev_act[i].fill(0.0)
         self.step_count[i] = 0
+        self.walk_phase[i] = 0.0 if (i == 0 or i % 2 == 0) else math.pi
         self.foot_contact[i] = 1.0
         self.last_single_foot[i] = 0
         self.last_step_tick[i] = 0
@@ -189,10 +192,15 @@ class BipedPhysicsEnv:
             o[27:44] = qd_norm
             o[44] = cr
             o[45] = cl
-            o[46] = float(self.stage)
-            # Heading & foot separation symmetry hints (purely kinematic sensor readings)
-            o[47] = float(d.xpos[self.rf_id, 0] - d.xpos[self.lf_id, 0])
-            o[48] = -float(d.qpos[1]) / 3.0
+            if self.stage == 1:
+                # Provide purely clock-phase (sin, cos) + lateral road offset for Walk RL
+                o[46] = math.sin(float(self.walk_phase[i]))
+                o[47] = math.cos(float(self.walk_phase[i]))
+                o[48] = -float(d.qpos[1]) / 3.0
+            else:
+                o[46] = 0.0
+                o[47] = float(d.xpos[self.rf_id, 0] - d.xpos[self.lf_id, 0])
+                o[48] = -float(d.qpos[1]) / 3.0
 
     def get_obs(self) -> torch.Tensor:
         return torch.from_numpy(self._obs_np.copy()).to(self.device)
@@ -251,7 +259,6 @@ class BipedPhysicsEnv:
             q17 = d.qpos[self.qpos_ids]
 
             upright = math.exp(-5.0 * (pitch * pitch + roll * roll))
-            height_ok = math.exp(-4.5 * (z - 2.64) ** 2)
             heading_ok = math.exp(-3.0 * yaw_err * yaw_err)
             posture_pen = 0.004 * float(np.mean((q17 - J_NOM) ** 2))
             energy_pen = (
@@ -261,37 +268,82 @@ class BipedPhysicsEnv:
             self.prev_act[i] = act_np[i]
 
             if self.stage == 0:
+                height_ok = math.exp(-4.5 * (z - 2.64) ** 2)
                 calm = math.exp(-0.35 * (vx_w * vx_w + vy_w * vy_w) - 0.06 * float(np.sum(d.qvel[3:6] ** 2)))
                 rew = 0.30 + 1.8 * upright * height_ok + 0.6 * heading_ok + 0.6 * calm - posture_pen - energy_pen
             else:
+                # Never penalize natural pelvis drop (z down to 2.38) during wide human strides
+                walk_h_ok = math.exp(-2.8 * max(0.0, 2.38 - z) ** 2 - 1.5 * max(0.0, z - 2.74) ** 2)
+                self.walk_phase[i] = (self.walk_phase[i] + dt_ctrl * self.walk_cadence) % (2.0 * math.pi)
                 cr, cl = self._measure_foot_contacts(d)
                 rf_x, lf_x = float(d.xpos[self.rf_id, 0]), float(d.xpos[self.lf_id, 0])
-                step_bonus = 0.0
-                if vx_loc > 0.30 and upright > 0.45:
-                    if cr > 0.5 and cl < 0.5 and self.last_single_foot[i] != 1 and (self.step_count[i] - self.last_step_tick[i]) >= 7:
-                        if self.last_single_foot[i] == 2:
-                            step_bonus = 0.45
+                rf_y, lf_y = float(d.xpos[self.rf_id, 1]), float(d.xpos[self.lf_id, 1])
+                foot_sep_loc = (rf_x - lf_x) * cy + (rf_y - lf_y) * sy
+
+                # Smooth ramp from calm stand into full Manual Sandbox stride
+                wb = min(1.0, (float(self.step_count[i]) * dt_ctrl) / 0.42)
+                s_ph = math.sin(float(self.walk_phase[i]))
+                c_ph = math.cos(float(self.walk_phase[i]))
+
+                # Prevent double-foot jumping/bunny-hopping cleanly (walking keeps >=1 foot on road)
+                airborne = cr < 0.5 and cl < 0.5
+                sym_knee_pen = 1.50 * max(0.0, min(float(q17[11]), float(q17[14])) - 0.30)
+
+                # Reward unhurried alternating human strides (>= 0.38s per step, wide foot span >= 0.55u)
+                stride_bonus = 0.0
+                span = abs(rf_x - lf_x)
+                if not airborne and vx_loc > 0.65 and upright > 0.50:
+                    if cr > 0.5 and cl < 0.5 and self.last_single_foot[i] != 1 and (self.step_count[i] - self.last_step_tick[i]) >= 19:
+                        if self.last_single_foot[i] == 2 and span >= 0.55:
+                            stride_bonus = 0.90 * min(1.6, span)
                         self.last_single_foot[i] = 1
                         self.last_step_tick[i] = int(self.step_count[i])
-                    elif cl > 0.5 and cr < 0.5 and self.last_single_foot[i] != 2 and (self.step_count[i] - self.last_step_tick[i]) >= 7:
-                        if self.last_single_foot[i] == 1:
-                            step_bonus = 0.45
+                    elif cl > 0.5 and cr < 0.5 and self.last_single_foot[i] != 2 and (self.step_count[i] - self.last_step_tick[i]) >= 19:
+                        if self.last_single_foot[i] == 1 and span >= 0.55:
+                            stride_bonus = 0.90 * min(1.6, span)
                         self.last_single_foot[i] = 2
                         self.last_step_tick[i] = int(self.step_count[i])
-                self.prev_rf_x[i] = rf_x
-                self.prev_lf_x[i] = lf_x
+
+                # Gate style/stride rewards by actual forward walking speed & ground contact
+                speed_gate = min(1.0, max(0.0, (vx_loc - 0.35) / 1.15))
+                stride_target = 1.05 * s_ph * wb
+                stride_match = 1.45 * math.exp(-1.2 * (foot_sep_loc - stride_target) ** 2)
+
+                rh_ref = 0.08 + 0.52 * s_ph * wb
+                lh_ref = 0.08 - 0.52 * s_ph * wb
+                rk_ref = 0.14 + max(0.0, c_ph) * 0.85 * wb
+                lk_ref = 0.14 + max(0.0, -c_ph) * 0.85 * wb
+                rs_ref = -0.50 * s_ph * wb
+                ls_ref = 0.50 * s_ph * wb
+                arm_elb_ref = 0.15 + 0.42 * wb
+                wt_ref = 0.12 * s_ph * wb
+
+                leg_err = 1.5 * ((q17[9] - rh_ref) ** 2 + (q17[12] - lh_ref) ** 2) + 0.9 * (
+                    (q17[11] - rk_ref) ** 2 + (q17[14] - lk_ref) ** 2
+                )
+                arm_err = (
+                    0.9 * ((q17[3] - rs_ref) ** 2 + (q17[6] - ls_ref) ** 2)
+                    + 0.4 * ((q17[5] - arm_elb_ref) ** 2 + (q17[8] - arm_elb_ref) ** 2)
+                    + 0.3 * ((q17[2] - wt_ref) ** 2)
+                )
+                leg_style = 1.10 * math.exp(-0.35 * leg_err) + 1.10 * math.exp(-1.4 * leg_err)
+                arm_style = 0.65 * math.exp(-0.6 * arm_err)
+                gait_rew = speed_gate * (stride_match + leg_style + arm_style)
 
                 fwd_prog = max(-0.3, min(1.15, vx_loc / self.target_speed))
-                vel_match = math.exp(-1.8 * (vx_loc - self.target_speed) ** 2)
-                lat_pen = 0.10 * abs(float(d.qpos[1])) + 0.08 * abs(vy_loc)
-                rew = (
-                    (0.15 + 1.75 * fwd_prog + 1.25 * vel_match) * (0.25 + 0.75 * upright * height_ok)
-                    + 0.65 * upright * heading_ok
-                    + step_bonus
-                    - lat_pen
-                    - posture_pen
-                    - energy_pen
-                )
+                vel_match = math.exp(-1.1 * (vx_loc - self.target_speed) ** 2)
+                lat_pen = 0.22 * abs(float(d.qpos[1])) + 0.08 * abs(vy_loc)
+                if airborne:
+                    rew = -0.80 - sym_knee_pen - lat_pen - energy_pen
+                else:
+                    rew = (
+                        (0.15 + 1.55 * fwd_prog + 1.10 * vel_match + gait_rew) * (0.25 + 0.75 * upright * walk_h_ok)
+                        + 0.75 * upright * heading_ok
+                        + stride_bonus
+                        - sym_knee_pen
+                        - lat_pen
+                        - energy_pen
+                    )
 
             fallen = (
                 z < 1.50

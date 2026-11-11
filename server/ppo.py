@@ -184,9 +184,9 @@ class PPOTrainer:
         up = float(stats.get("avg_upright", 0.0))
         primary_rew = avg_rew if avg_rew > 0.0 else best_rew
         return (
-            round(dist, 2) if self.model_name == "walk" and dist >= 3.0 else 0.0,
             round(primary_rew, 2),
-            round(up * 100.0 + max(best_rew, 0.0) * 0.01, 2),
+            round(up * 100.0 + (min(dist, 30.0) if self.model_name == "walk" else 0.0), 2),
+            round(max(best_rew, 0.0), 2),
         )
 
     def _read_best_score(self) -> tuple[float, float, float]:
