@@ -52,39 +52,39 @@ class RunningNorm(nn.Module):
 
 
 class ActorCritic(nn.Module):
-    """Compact GPU Actor-Critic MLP for 45-dim biped state -> 15-dim joint targets."""
+    """GPU Actor-Critic MLP for 49-dim humanoid state -> 17-dim joint targets."""
 
     def __init__(self, obs_dim: int = 49, act_dim: int = 17):
         super().__init__()
         self.obs_norm = RunningNorm(obs_dim)
         self.actor = nn.Sequential(
-            nn.Linear(obs_dim, 128),
+            nn.Linear(obs_dim, 256),
             nn.Tanh(),
-            nn.Linear(128, 128),
+            nn.Linear(256, 256),
             nn.Tanh(),
-            nn.Linear(128, act_dim),
+            nn.Linear(256, act_dim),
             nn.Tanh(),
         )
         self.critic = nn.Sequential(
-            nn.Linear(obs_dim, 128),
+            nn.Linear(obs_dim, 256),
             nn.Tanh(),
-            nn.Linear(128, 128),
+            nn.Linear(256, 256),
             nn.Tanh(),
-            nn.Linear(128, 1),
+            nn.Linear(256, 1),
         )
-        # Start with moderate exploration std (~0.32) for smooth early probing
-        self.log_std = nn.Parameter(torch.full((act_dim,), -1.15))
+        # Standard exploration std (~0.43) for pure RL from scratch
+        self.log_std = nn.Parameter(torch.full((act_dim,), -0.85))
         self.init_weights()
 
     @torch.no_grad()
     def init_weights(self) -> None:
-        """Initialize or reset weights in-place so CUDA Graph tensor pointers stay fixed."""
+        """Initialize or reset network weights cleanly near neutral posture."""
         for m in self.modules():
             if isinstance(m, nn.Linear):
                 nn.init.orthogonal_(m.weight, gain=1.0)
                 nn.init.zeros_(m.bias)
-        nn.init.orthogonal_(self.actor[-2].weight, gain=0.05)
-        self.log_std.fill_(-1.15)
+        nn.init.orthogonal_(self.actor[-2].weight, gain=0.02)
+        self.log_std.fill_(-0.85)
         self.obs_norm.mean.zero_()
         self.obs_norm.var.fill_(1.0)
         self.obs_norm.count.fill_(1e-4)
@@ -100,7 +100,7 @@ class ActorCritic(nn.Module):
         value = self.critic(x).squeeze(-1)
         if deterministic:
             return mean, torch.zeros(obs.shape[0], device=obs.device), value
-        log_std = torch.clamp(self.log_std, -2.8, -1.05)
+        log_std = torch.clamp(self.log_std, -2.3, -0.35)
         std = torch.exp(log_std)
         raw_act = mean + std * torch.randn_like(mean)
         log_prob = -0.5 * (
@@ -115,7 +115,7 @@ class ActorCritic(nn.Module):
         x = self.obs_norm(obs)
         mean = self.actor(x)
         value = self.critic(x).squeeze(-1)
-        std = torch.exp(torch.clamp(self.log_std, -2.8, -1.05))
+        std = torch.exp(torch.clamp(self.log_std, -2.3, -0.35))
         dist = Normal(mean, std)
         log_prob = dist.log_prob(actions).sum(dim=-1)
         entropy = dist.entropy().sum(dim=-1)
@@ -141,12 +141,12 @@ class PPOTrainer:
         self,
         obs_dim: int = 49,
         act_dim: int = 17,
-        lr: float = 5e-4,
+        lr: float = 3e-4,
         gamma: float = 0.99,
         gae_lambda: float = 0.95,
         clip_eps: float = 0.2,
-        epochs: int = 4,
-        minibatches: int = 4,
+        epochs: int = 5,
+        minibatches: int = 6,
         device: torch.device | None = None,
         models_dir: Path | str = "models",
     ):
@@ -172,7 +172,7 @@ class PPOTrainer:
 
     @staticmethod
     def _score_stats(stats: dict | None) -> tuple[float, float, float]:
-        if not stats:
+        if not stats or stats.get("arch") != "mujoco_pure_v1":
             return (-1.0, -1e9, -1.0)
         stage = int(stats.get("stage", 0))
         dist = float(stats.get("best_distance", 0.0))
@@ -251,11 +251,10 @@ class PPOTrainer:
                 pg_loss = -torch.min(surr1, surr2).mean()
                 vf_loss = 0.5 * nn.functional.smooth_l1_loss(new_val, b_ret[idx], beta=10.0)
                 ent = entropy.mean()
-                loss = pg_loss + 0.5 * vf_loss
+                loss = pg_loss + 0.5 * vf_loss - 0.004 * ent
 
                 self.optimizer.zero_grad(set_to_none=True)
                 loss.backward()
-                # Clip actor and critic separately so large critic value scales never choke actor/log_std learning
                 nn.utils.clip_grad_norm_(actor_params, 0.5)
                 nn.utils.clip_grad_norm_(critic_params, 1.0)
                 self.optimizer.step()
@@ -267,13 +266,13 @@ class PPOTrainer:
 
         vals = torch.cat([pg_sum, vf_sum, ent_sum]).tolist()
         self.update_count += 1
-        # Smoothly lower exploration ceiling toward log_std=-1.85 (std~0.16) without shocking existing weights
-        frac = min(1.0, self.update_count / 180.0)
-        target_max = -1.05 - 0.80 * frac
+        # Smoothly anneal pure RL exploration std down from ~0.43 toward ~0.19 over 450 updates
+        frac = min(1.0, self.update_count / 450.0)
+        target_max = -0.85 - 0.80 * frac
         with torch.no_grad():
             cur_max = float(self.model.log_std.max().item())
             next_max = max(target_max, cur_max - 0.015)
-            self.model.log_std.clamp_(-2.8, next_max)
+            self.model.log_std.clamp_(-2.3, next_max)
         denom = max(1, steps)
         return {
             "policy_loss": round(vals[0] / denom, 4),
@@ -302,6 +301,8 @@ class PPOTrainer:
 
     def save(self, stats: dict, export_onnx: bool = True, allow_best: bool = True) -> dict:
         """Save real PyTorch .pt checkpoint, protected best .pt snapshot, and ONNX graph to models/."""
+        stats = dict(stats)
+        stats["arch"] = "mujoco_pure_v1"
         cpu_state = {k: v.detach().cpu() for k, v in self.model.state_dict().items()}
         payload = {
             "model_state": cpu_state,
@@ -350,6 +351,8 @@ class PPOTrainer:
             try:
                 payload = torch.load(path, map_location=self.device, weights_only=False)
                 stats = payload.get("stats", {})
+                if stats.get("arch") != "mujoco_pure_v1":
+                    continue
                 candidates.append((self._score_stats(stats), path, payload))
             except Exception:
                 continue

@@ -15,13 +15,13 @@ from .ppo import PPOTrainer
 
 
 class LearningManager:
-    """Runs GPU-resident physics + PPO via CUDA Graphs and streams live frames."""
+    """Runs multi-threaded MuJoCo rigid-body physics + GPU PPO training from scratch."""
 
     def __init__(
         self,
         models_dir: Path | str = "models",
-        num_envs: int = 64,
-        rollout_steps: int = 48,
+        num_envs: int = 24,
+        rollout_steps: int = 64,
     ):
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.env = BipedPhysicsEnv(num_envs=num_envs, device=self.device)
@@ -67,7 +67,6 @@ class LearningManager:
             stage = int(loaded.get("stage", 0))
             self.last_milestone = f"Loaded saved model (Ep {self.episode}, Stage {'Walk' if stage else 'Stand'})"
 
-        # Pre-allocate static GPU buffers and capture CUDA Graphs for zero-CPU-loop stepping
         self._s_obs = torch.zeros(num_envs, self.env.OBS_DIM, device=self.device)
         self._s_act = torch.zeros(num_envs, self.env.ACT_DIM, device=self.device)
         self._s_logp = torch.zeros(num_envs, device=self.device)
@@ -76,56 +75,7 @@ class LearningManager:
         self._s_done = torch.zeros(num_envs, device=self.device)
         self._s_next_obs = torch.zeros(num_envs, self.env.OBS_DIM, device=self.device)
         self._train_w = torch.ones(1, device=self.device)
-
-        self._step_graph: torch.cuda.CUDAGraph | None = None
-        if self.device.type == "cuda":
-            self._capture_cuda_graph()
-        else:
-            self._s_obs.copy_(self.env.get_obs())
-
-    def _capture_cuda_graph(self) -> None:
-        """Capture one unified CUDA Graph for train/eval stepping (~2ms GPU, near-zero CPU)."""
-        saved_mean = self.ppo.model.obs_norm.mean.clone()
-        saved_var = self.ppo.model.obs_norm.var.clone()
-        saved_count = self.ppo.model.obs_norm.count.clone()
-        saved_stage = self.env.stage
-
-        def unified_step():
-            self.ppo.model.obs_norm.update(self._s_obs, active_w=self._train_w)
-            with torch.no_grad():
-                act, logp, val = self.ppo.model.act(self._s_obs, train_w=self._train_w)
-            next_obs, rew, done = self.env.step_gpu(act, dt_ctrl=1.0 / 45.0, substeps=4)
-            self._s_act.copy_(act)
-            self._s_logp.copy_(logp)
-            self._s_val.copy_(val)
-            self._s_rew.copy_(rew)
-            self._s_done.copy_(done.float())
-            self._s_next_obs.copy_(next_obs)
-
-        self._s_obs.copy_(self.env.get_obs())
-        stream = torch.cuda.Stream()
-        stream.wait_stream(torch.cuda.current_stream())
-        with torch.cuda.stream(stream):
-            for _ in range(3):
-                unified_step()
-                self._s_obs.copy_(self._s_next_obs)
-        torch.cuda.current_stream().wait_stream(stream)
-        torch.cuda.synchronize()
-
-        self._step_graph = torch.cuda.CUDAGraph()
-        with torch.cuda.graph(self._step_graph):
-            unified_step()
-        torch.cuda.synchronize()
-
-        # Restore clean initial state & obs_norm after warmup/capture
-        self.ppo.model.obs_norm.mean.copy_(saved_mean)
-        self.ppo.model.obs_norm.var.copy_(saved_var)
-        self.ppo.model.obs_norm.count.copy_(saved_count)
-        self.env.set_stage(saved_stage)
-        self.env.reset()
-        self.env.consume_gpu_stats()
-        self.env.best_rew_t.fill_(self.best_reward)
-        self.env.best_dist_t.fill_(self.best_distance)
+        self._step_graph = None
         self._s_obs.copy_(self.env.get_obs())
 
     def subscribe(self, cb: Callable[[dict], Awaitable[None]]) -> None:
@@ -296,11 +246,11 @@ class LearningManager:
 
     async def nudge(self, direction: str = "random") -> dict:
         impulses = {
-            "front": (-1.20, 0.0, "Front push — stepping/bending knee back to balance!"),
-            "back": (1.20, 0.0, "Back push — stepping/bending knee forward to catch balance!"),
+            "front": (-0.95, 0.0, "Front push — bending knee and stepping back to catch balance!"),
+            "back": (1.15, 0.0, "Back push — lifting knee and stepping forward to catch balance!"),
             "left": (0.0, -0.95, "Left push — abducting hip & leg out to balance!"),
             "right": (0.0, 0.95, "Right push — abducting hip & leg out to balance!"),
-            "random": (1.05, 0.80, "Applied lateral/forward nudge impulse!"),
+            "random": (0.95, 0.85, "Applied lateral/forward nudge impulse!"),
         }
         dvx, dvz, note = impulses.get(direction, impulses["random"])
         async with self._lock:
@@ -323,20 +273,17 @@ class LearningManager:
                 pass
 
     def _step_once_gpu(self, is_eval: bool) -> None:
-        if self._step_graph is not None:
-            self._step_graph.replay()
-        else:
-            if not is_eval:
-                self.ppo.model.obs_norm.update(self._s_obs)
-            with torch.no_grad():
-                act, logp, val = self.ppo.model.act(self._s_obs, deterministic=is_eval)
-            next_obs, rew, done = self.env.step_gpu(act, dt_ctrl=1.0 / 45.0, substeps=4)
-            self._s_act.copy_(act)
-            self._s_logp.copy_(logp)
-            self._s_val.copy_(val)
-            self._s_rew.copy_(rew)
-            self._s_done.copy_(done.float())
-            self._s_next_obs.copy_(next_obs)
+        if not is_eval:
+            self.ppo.model.obs_norm.update(self._s_obs)
+        with torch.no_grad():
+            act, logp, val = self.ppo.model.act(self._s_obs, deterministic=is_eval)
+        next_obs, rew, done = self.env.step_gpu(act, dt_ctrl=0.02, substeps=4)
+        self._s_act.copy_(act)
+        self._s_logp.copy_(logp)
+        self._s_val.copy_(val)
+        self._s_rew.copy_(rew)
+        self._s_done.copy_(done.float())
+        self._s_next_obs.copy_(next_obs)
 
     async def _run_loop(self) -> None:
         T = self.rollout_steps

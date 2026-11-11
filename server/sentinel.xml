@@ -1,0 +1,112 @@
+<mujoco model="steel_sentinel">
+  <compiler angle="radian" inertiafromgeom="true" />
+  <option timestep="0.005" iterations="35" ls_iterations="20" integrator="implicitfast" gravity="0 0 -18.0" cone="pyramidal" />
+
+  <default>
+    <joint damping="0.8" armature="0.08" limited="true" />
+    <geom condim="3" friction="1.15 0.015 0.005" solref="0.018 1.2" solimp="0.9 0.95 0.001" contype="0" conaffinity="0" />
+    <position ctrllimited="true" forcelimited="true" />
+  </default>
+
+  <asset>
+    <texture type="2d" name="grid" builtin="checker" rgb1="0.18 0.2 0.24" rgb2="0.24 0.26 0.3" width="64" height="64" />
+    <material name="ground_mat" texture="grid" texrepeat="20 20" />
+  </asset>
+
+  <worldbody>
+    <geom name="road" type="plane" pos="0 0 0.12" size="400 20 0.1" contype="1" conaffinity="1" friction="1.2 0.15 0.03" material="ground_mat" />
+
+    <body name="hips" pos="0 0 2.72">
+      <freejoint name="root" />
+      <geom name="pelvis_geom" type="box" size="0.325 0.50 0.20" mass="11.0" contype="1" conaffinity="1" />
+
+      <body name="torso" pos="0 0 0.25">
+        <joint name="wt" type="hinge" axis="0 0 1" range="-0.8 0.8" damping="1.5" armature="0.12" />
+        <geom name="chest_geom" type="box" pos="0 0 0.95" size="0.38 0.62 0.72" mass="26.0" contype="1" conaffinity="1" />
+
+        <body name="head" pos="0 0 1.85">
+          <joint name="hy" type="hinge" axis="0 0 1" range="-1.0 1.0" damping="0.6" />
+          <joint name="hx" type="hinge" axis="0 1 0" range="-0.6 0.6" damping="0.6" />
+          <geom name="head_geom" type="sphere" pos="0 0 0.40" size="0.42" mass="4.5" contype="1" conaffinity="1" />
+        </body>
+
+        <!-- Right arm (Three.js s=+1 -> +Y in MuJoCo when facing +X) -->
+        <body name="r_upper_arm" pos="0 0.90 1.50">
+          <joint name="rs" type="hinge" axis="0 -1 0" range="-2.5 2.5" damping="1.2" armature="0.10" />
+          <joint name="rr" type="hinge" axis="1 0 0" range="0.0 2.8" damping="1.2" armature="0.10" />
+          <geom name="r_uarm_geom" type="capsule" fromto="0 0 0 0 0 -1.30" size="0.17" mass="2.6" />
+          <body name="r_forearm" pos="0 0 -1.30">
+            <joint name="re" type="hinge" axis="0 -1 0" range="0.0 2.4" damping="0.9" armature="0.08" />
+            <geom name="r_farm_geom" type="capsule" fromto="0 0 0 0 0 -1.25" size="0.14" mass="2.0" contype="1" conaffinity="1" />
+          </body>
+        </body>
+
+        <!-- Left arm (Three.js s=-1 -> -Y in MuJoCo when facing +X) -->
+        <body name="l_upper_arm" pos="0 -0.90 1.50">
+          <joint name="ls" type="hinge" axis="0 -1 0" range="-2.5 2.5" damping="1.2" armature="0.10" />
+          <joint name="lr" type="hinge" axis="-1 0 0" range="0.0 2.8" damping="1.2" armature="0.10" />
+          <geom name="l_uarm_geom" type="capsule" fromto="0 0 0 0 0 -1.30" size="0.17" mass="2.6" />
+          <body name="l_forearm" pos="0 0 -1.30">
+            <joint name="le" type="hinge" axis="0 -1 0" range="0.0 2.4" damping="0.9" armature="0.08" />
+            <geom name="l_farm_geom" type="capsule" fromto="0 0 0 0 0 -1.25" size="0.14" mass="2.0" contype="1" conaffinity="1" />
+          </body>
+        </body>
+      </body>
+
+      <!-- Right leg (Three.js lR: s=+1 -> +Y in MuJoCo, ZYX hip rotation order) -->
+      <body name="r_thigh" pos="0 0.30 -0.15">
+        <joint name="rha" type="hinge" axis="1 0 0" range="-0.45 0.85" damping="2.2" armature="0.15" />
+        <joint name="rh" type="hinge" axis="0 -1 0" range="-1.2 1.2" damping="2.4" armature="0.18" />
+        <geom name="r_thigh_geom" type="capsule" fromto="0 0 0 0 0 -1.20" size="0.21" mass="7.0" />
+        <body name="r_shin" pos="0 0 -1.20">
+          <joint name="rk" type="hinge" axis="0 1 0" range="0.0 2.2" damping="2.0" armature="0.15" />
+          <geom name="r_shin_geom" type="capsule" fromto="0 0 0 0 0 -1.15" size="0.17" mass="4.5" />
+          <body name="r_foot" pos="0 0 -1.15">
+            <joint name="ra" type="hinge" axis="0 1 0" range="-0.8 0.8" damping="1.4" armature="0.12" />
+            <geom name="r_sole" type="box" pos="0.20 0 0" size="0.46 0.22 0.10" mass="1.8" contype="1" conaffinity="1" />
+          </body>
+        </body>
+      </body>
+
+      <!-- Left leg (Three.js lL: s=-1 -> -Y in MuJoCo, ZYX hip rotation order) -->
+      <body name="l_thigh" pos="0 -0.30 -0.15">
+        <joint name="lha" type="hinge" axis="-1 0 0" range="-0.45 0.85" damping="2.2" armature="0.15" />
+        <joint name="lh" type="hinge" axis="0 -1 0" range="-1.2 1.2" damping="2.4" armature="0.18" />
+        <geom name="l_thigh_geom" type="capsule" fromto="0 0 0 0 0 -1.20" size="0.21" mass="7.0" />
+        <body name="l_shin" pos="0 0 -1.20">
+          <joint name="lk" type="hinge" axis="0 1 0" range="0.0 2.2" damping="2.0" armature="0.15" />
+          <geom name="l_shin_geom" type="capsule" fromto="0 0 0 0 0 -1.15" size="0.17" mass="4.5" />
+          <body name="l_foot" pos="0 0 -1.15">
+            <joint name="la" type="hinge" axis="0 1 0" range="-0.8 0.8" damping="1.4" armature="0.12" />
+            <geom name="l_sole" type="box" pos="0.20 0 0" size="0.46 0.22 0.10" mass="1.8" contype="1" conaffinity="1" />
+          </body>
+        </body>
+      </body>
+    </body>
+  </worldbody>
+
+  <actuator>
+    <position name="a_hy"  joint="hy"  kp="80"   kv="8"   ctrlrange="-1.0 1.0"  forcerange="-80 80" />
+    <position name="a_hx"  joint="hx"  kp="80"   kv="8"   ctrlrange="-0.6 0.6"  forcerange="-80 80" />
+    <position name="a_wt"  joint="wt"  kp="480"  kv="40"  ctrlrange="-0.8 0.8"  forcerange="-480 480" />
+
+    <position name="a_rs"  joint="rs"  kp="260"  kv="24"  ctrlrange="-2.5 2.5"  forcerange="-260 260" />
+    <position name="a_rr"  joint="rr"  kp="260"  kv="24"  ctrlrange="0.0 2.8"   forcerange="-260 260" />
+    <position name="a_re"  joint="re"  kp="180"  kv="16"  ctrlrange="0.0 2.4"   forcerange="-180 180" />
+
+    <position name="a_ls"  joint="ls"  kp="260"  kv="24"  ctrlrange="-2.5 2.5"  forcerange="-260 260" />
+    <position name="a_lr"  joint="lr"  kp="260"  kv="24"  ctrlrange="0.0 2.8"   forcerange="-260 260" />
+    <position name="a_le"  joint="le"  kp="180"  kv="16"  ctrlrange="0.0 2.4"   forcerange="-180 180" />
+
+    <position name="a_rh"  joint="rh"  kp="2500" kv="95"  ctrlrange="-1.2 1.2"  forcerange="-2400 2400" />
+    <position name="a_rha" joint="rha" kp="2000" kv="85"  ctrlrange="-0.45 0.85" forcerange="-1800 1800" />
+    <position name="a_rk"  joint="rk"  kp="2500" kv="95"  ctrlrange="0.0 2.2"   forcerange="-2400 2400" />
+
+    <position name="a_lh"  joint="lh"  kp="2500" kv="95"  ctrlrange="-1.2 1.2"  forcerange="-2400 2400" />
+    <position name="a_lha" joint="lha" kp="2000" kv="85"  ctrlrange="-0.45 0.85" forcerange="-1800 1800" />
+    <position name="a_lk"  joint="lk"  kp="2500" kv="95"  ctrlrange="0.0 2.2"   forcerange="-2400 2400" />
+
+    <position name="a_ra"  joint="ra"  kp="1100" kv="50"  ctrlrange="-0.8 0.8"  forcerange="-1100 1100" />
+    <position name="a_la"  joint="la"  kp="1100" kv="50"  ctrlrange="-0.8 0.8"  forcerange="-1100 1100" />
+  </actuator>
+</mujoco>
