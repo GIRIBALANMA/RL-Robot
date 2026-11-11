@@ -25,27 +25,27 @@ JOINT_SIGN = torch.tensor(
     [1.0, 1.0, 1.0, -1.0, 1.0, -1.0, -1.0, -1.0, -1.0, -1.0, 1.0, -1.0, 1.0, 1.0, 1.0],
     dtype=torch.float32,
 )
-# Neutral balanced standing stance (action = 0 commands upright posture with flat feet)
+# Neutral human-like straight standing stance (soft knee unlock, relaxed natural arms)
 JOINT_NOM = torch.tensor(
-    [0.0, 0.0, 0.0, 0.05, 0.14, 0.25, 0.05, 0.14, 0.25, 0.14, 0.28, 0.14, 0.28, -0.14, -0.14],
+    [0.0, 0.0, 0.0, 0.0, 0.06, 0.20, 0.0, 0.06, 0.20, 0.08, 0.16, 0.08, 0.16, -0.08, -0.08],
     dtype=torch.float32,
 )
 ACTION_SCALE = torch.tensor(
-    [0.5, 0.4, 0.5, 0.9, 0.65, 0.7, 0.9, 0.65, 0.7, 0.75, 0.85, 0.75, 0.85, 0.55, 0.55],
+    [0.18, 0.18, 0.22, 0.95, 0.85, 0.75, 0.95, 0.85, 0.75, 0.75, 0.85, 0.75, 0.85, 0.52, 0.52],
     dtype=torch.float32,
 )
 
-# Per-joint PD gains (stronger on legs/ankles, lighter on arms/head)
+# Per-joint PD gains (balanced shoulders for smooth arm balance/swing, strong legs, steady waist/head)
 KP = torch.tensor(
-    [10.0, 10.0, 18.0, 14.0, 14.0, 14.0, 14.0, 14.0, 14.0, 52.0, 56.0, 52.0, 56.0, 42.0, 42.0],
+    [12.0, 12.0, 22.0, 20.0, 20.0, 18.0, 20.0, 20.0, 18.0, 54.0, 58.0, 54.0, 58.0, 44.0, 44.0],
     dtype=torch.float32,
 )
 KD = torch.tensor(
-    [1.5, 1.5, 2.4, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 5.2, 5.6, 5.2, 5.6, 4.4, 4.4],
+    [1.8, 1.8, 3.0, 2.6, 2.6, 2.2, 2.6, 2.6, 2.2, 5.4, 5.8, 5.4, 5.8, 4.6, 4.6],
     dtype=torch.float32,
 )
 TORQUE_LIMIT = torch.tensor(
-    [4.0, 4.0, 8.0, 6.0, 6.0, 6.0, 6.0, 6.0, 6.0, 32.0, 34.0, 32.0, 34.0, 26.0, 26.0],
+    [4.0, 4.0, 8.0, 10.0, 10.0, 8.0, 10.0, 10.0, 8.0, 34.0, 36.0, 34.0, 36.0, 28.0, 28.0],
     dtype=torch.float32,
 )
 JOINT_INERTIA = torch.tensor(
@@ -244,7 +244,16 @@ class BipedPhysicsEnv:
         head_local = torch.tensor([0.0, 2.35, 0.0], device=self.device).view(1, 3)
         p_chest = self.pos + torch.einsum("nij,nj->ni", R_root, chest_local)
         p_head = self.pos + torch.einsum("nij,nj->ni", R_root, head_local)
-        p_com = self.pos + torch.einsum("nij,j->ni", R_root, self.com_local)
+
+        # Include arm mass COM shift so raising/swinging arms physically shifts balance
+        rs, rr = self.q[:, 3], self.q[:, 4]
+        ls, lr = self.q[:, 6], self.q[:, 7]
+        ay_r = -1.1 * torch.cos(rr)
+        ay_l = -1.1 * torch.cos(lr)
+        arm_r_off = torch.stack([1.1 * torch.sin(rr), ay_r * torch.cos(rs), -ay_r * torch.sin(rs)], dim=-1)
+        arm_l_off = torch.stack([-1.1 * torch.sin(lr), ay_l * torch.cos(ls), -ay_l * torch.sin(ls)], dim=-1)
+        arm_com_shift = 0.10 * ((arm_r_off + arm_l_off) - torch.tensor([0.0, -2.2, 0.0], device=self.device))
+        p_com = self.pos + torch.einsum("nij,nj->ni", R_root, self.com_local.unsqueeze(0) + arm_com_shift)
 
         return R_root, axis_x_local, p_com, p_hip, p_knee, p_ankle, p_corners, p_chest, p_head
 
@@ -352,9 +361,9 @@ class BipedPhysicsEnv:
             tau_ext[:, 13] = tau_c_ank[:, 0]
             tau_ext[:, 14] = tau_c_ank[:, 1]
 
-            # Slight arm/waist angular-momentum counterbalance reaction on torso pitch/yaw
-            arm_pitch_react = -0.05 * (tau_pd[:, 3] + tau_pd[:, 6])
-            arm_roll_react = -0.05 * (tau_pd[:, 4] - tau_pd[:, 7])
+            # Human arm & waist angular-momentum counterbalance reaction on torso (proportional to arm inertia)
+            arm_pitch_react = 0.11 * (tau_pd[:, 3] + tau_pd[:, 6])
+            arm_roll_react = -0.16 * tau_pd[:, 4] + 0.16 * tau_pd[:, 7]
             waist_yaw_react = -0.08 * tau_pd[:, 2]
             M_local = torch.einsum("nji,nj->ni", R_root, M_net)
             M_local[:, 0] += arm_pitch_react
@@ -399,56 +408,83 @@ class BipedPhysicsEnv:
         self.gait_phase = (self.gait_phase + dt_ctrl * 6.8) % (2.0 * math.pi)
         self._update_foot_metrics()
 
-        # Compute rewards & terminations
+        # Compute human-like rewards & terminations
         pitch = self.eul[:, 0]
         yaw_err = _wrap_angle(self.eul[:, 1] - math.pi / 2.0)
         roll = self.eul[:, 2]
-        upright = torch.exp(-4.5 * (pitch * pitch + roll * roll))
-        height_ok = torch.exp(-6.0 * (self.pos[:, 1] - 2.64) ** 2)
-        ang_calm = torch.exp(-0.12 * (self.ang_vel ** 2).sum(dim=-1))
+        # Straight upright torso posture (allows slight ~4 deg dynamic lean while penalizing slouch)
+        upright = torch.exp(-6.5 * (pitch * pitch + roll * roll))
+        torso_straight_pen = 0.65 * (pitch * pitch + roll * roll) + 0.25 * (self.q[:, 0] ** 2 + self.q[:, 1] ** 2)
+        height_ok = torch.exp(-7.0 * (self.pos[:, 1] - 2.70) ** 2)
+        ang_calm = torch.exp(-0.15 * (self.ang_vel ** 2).sum(dim=-1))
 
-        energy_pen = 0.015 * (action ** 2).mean(dim=-1) + 0.03 * ((action - self.prev_act) ** 2).mean(dim=-1)
+        energy_pen = 0.012 * (action ** 2).mean(dim=-1) + 0.025 * ((action - self.prev_act) ** 2).mean(dim=-1)
         self.prev_act = action.clone()
 
         both_feet = (total_contact[:, 0] > 1.0).float() * (total_contact[:, 1] > 1.0).float()
         any_foot = ((total_contact[:, 0] > 1.0) | (total_contact[:, 1] > 1.0)).float()
 
+        # Arm counterbalance reward: extend arms laterally to counter roll, relax down when upright
+        desired_rr = torch.clamp(0.06 + torch.clamp(roll, min=0.0) * 2.2, 0.04, 1.4)
+        desired_lr = torch.clamp(0.06 + torch.clamp(-roll, min=0.0) * 2.2, 0.04, 1.4)
+        arm_balance_pose = torch.exp(
+            -3.0 * ((self.q[:, 4] - desired_rr) ** 2 + (self.q[:, 7] - desired_lr) ** 2)
+        )
+        elbow_natural = torch.exp(-2.5 * ((self.q[:, 5] - 0.32) ** 2 + (self.q[:, 8] - 0.32) ** 2))
+
         if self.stage == 0:
-            # Stage 0: Learn to stand balanced on both feet
+            # Stage 0: Stand straight like a human using subtle ankle + arm balance, not torso lean/twist
             still_bonus = torch.exp(-0.8 * (self.vel[:, 0] ** 2 + self.vel[:, 2] ** 2))
+            waist_straight = torch.exp(-8.0 * (self.q[:, 2] ** 2))
+            arm_pitch_calm = torch.exp(-2.0 * ((self.q[:, 3] + 1.4 * pitch) ** 2 + (self.q[:, 6] + 1.4 * pitch) ** 2))
             reward = (
                 0.45
-                + 1.3 * upright
-                + 1.1 * height_ok
+                + 1.5 * upright
+                + 1.2 * height_ok
                 + 0.4 * both_feet
-                + 0.3 * still_bonus
-                + 0.25 * ang_calm
+                + 0.35 * still_bonus
+                + 0.35 * waist_straight
+                + 0.45 * arm_balance_pose
+                + 0.30 * arm_pitch_calm
+                + 0.20 * elbow_natural
+                + 0.20 * ang_calm
+                - torso_straight_pen
                 - energy_pen
             )
         else:
-            # Stage 1: Walk forward along +x road
+            # Stage 1: Human walk with tall straight torso and natural opposite arm swing
             vx = self.vel[:, 0]
             vz = self.vel[:, 2]
             vel_match = torch.exp(-1.1 * (vx - self.target_speed) ** 2)
             fwd_progress = torch.clamp(vx, -1.0, 3.6) * 0.65
-            heading = torch.exp(-3.0 * yaw_err * yaw_err - 0.8 * vz * vz)
+            heading = torch.exp(-3.5 * yaw_err * yaw_err - 0.9 * vz * vz)
 
-            # Encourage alternating stride & swing foot clearance when moving
+            # Proper human opposite hand swing: right arm counters right hip, left arm counters left hip
+            arm_counter_err = (self.q[:, 3] + 0.85 * self.q[:, 9]) ** 2 + (self.q[:, 6] + 0.85 * self.q[:, 11]) ** 2
+            arm_swing_reward = 0.75 * torch.exp(-3.5 * arm_counter_err)
+            # Subtle natural waist counter-twist matching stride instead of hunched torso
+            waist_natural = 0.25 * torch.exp(-6.0 * (self.q[:, 2] - 0.14 * (self.q[:, 11] - self.q[:, 9])) ** 2)
+
             s_phase = torch.sin(self.gait_phase)
             stride_sep = torch.clamp(torch.abs(self.q[:, 9] - self.q[:, 11]), 0.0, 0.9)
             swing_lift = torch.clamp(torch.abs(self.foot_heights[:, 0] - self.foot_heights[:, 1]), 0.0, 0.35)
-            gait_guide = 0.4 * stride_sep + 0.8 * swing_lift + 0.15 * s_phase * (self.q[:, 9] - self.q[:, 11])
+            gait_guide = 0.35 * stride_sep + 0.75 * swing_lift + 0.15 * s_phase * (self.q[:, 9] - self.q[:, 11])
 
             reward = (
                 0.35
                 + 1.5 * vel_match
                 + fwd_progress
-                + 0.95 * upright
-                + 0.75 * height_ok
+                + 1.25 * upright
+                + 0.85 * height_ok
                 + 0.45 * heading
                 + 0.25 * any_foot
+                + arm_swing_reward
+                + 0.30 * arm_balance_pose
+                + 0.25 * elbow_natural
+                + waist_natural
                 + gait_guide
                 + 0.15 * ang_calm
+                - 0.8 * torso_straight_pen
                 - energy_pen
             )
 

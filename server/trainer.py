@@ -255,7 +255,7 @@ class LearningManager:
                     with torch.no_grad():
                         act, logp, val = self.ppo.model.act(obs, deterministic=is_eval)
 
-                    next_obs, rew, done, completed = self.env.step(act, dt_ctrl=1.0 / 32.0, substeps=4)
+                    next_obs, rew, done, completed = self.env.step(act, dt_ctrl=1.0 / 45.0, substeps=4)
                     self.total_steps += N if not is_eval else 1
 
                     if not is_eval:
@@ -311,9 +311,9 @@ class LearningManager:
                         if (
                             self.curriculum_mode == "auto"
                             and self.env.stage == 0
-                            and self.updates >= 22
-                            and avg_up >= 0.76
-                            and avg_len >= 95.0
+                            and self.updates >= 26
+                            and avg_up >= 0.72
+                            and avg_len >= 70.0
                         ):
                             self.env.set_stage(1)
                             self.save_now(export_onnx=True)
