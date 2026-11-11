@@ -39,8 +39,9 @@
           </div>
 
           <ol class="stepper" aria-label="Isolated robot models">
-            <li id="step-stand" data-state="active"><span>01</span> Stand Model</li>
-            <li id="step-walk" data-state="queued"><span>02</span> Walk Model</li>
+            <li id="step-stand" data-state="active"><span>01</span> Stand</li>
+            <li id="step-getup" data-state="queued"><span>02</span> Stand Up</li>
+            <li id="step-walk" data-state="queued"><span>03</span> Walk</li>
           </ol>
 
           <p id="milestone-banner" class="milestone" aria-live="polite">Initializing GPU physics &amp; policy...</p>
@@ -78,6 +79,7 @@
             <span class="ctrl-label">Model Mode (Isolated)</span>
             <div class="pill-row">
               <button type="button" data-stage="stand" aria-pressed="true">Stand</button>
+              <button type="button" data-stage="getup" aria-pressed="false">Stand Up</button>
               <button type="button" data-stage="walk" aria-pressed="false">Walk</button>
             </div>
           </div>

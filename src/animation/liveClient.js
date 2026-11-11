@@ -12,9 +12,36 @@ export function createLiveClient({ onTelemetry, onConnectionChange }) {
 
   const lerp = (a, b, t) => a + (b - a) * t;
   const lerpAngle = (a, b, t) => {
-    const d = ((b - a + Math.PI) % (2 * Math.PI)) - Math.PI;
-    const shortD = d < -Math.PI ? d + 2 * Math.PI : d;
-    return a + shortD * t;
+    const tau = 2 * Math.PI;
+    const d = ((((b - a + Math.PI) % tau) + tau) % tau) - Math.PI;
+    return a + d * t;
+  };
+  const slerpQuat = (a, b, t) => {
+    let dot = a[0] * b[0] + a[1] * b[1] + a[2] * b[2] + a[3] * b[3];
+    let bx = b[0], by = b[1], bz = b[2], bw = b[3];
+    if (dot < 0) {
+      dot = -dot;
+      bx = -bx;
+      by = -by;
+      bz = -bz;
+      bw = -bw;
+    }
+    let s0, s1;
+    if (dot > 0.9995) {
+      s0 = 1 - t;
+      s1 = t;
+    } else {
+      const omega = Math.acos(Math.min(1, dot));
+      const sinO = Math.sin(omega) || 1;
+      s0 = Math.sin((1 - t) * omega) / sinO;
+      s1 = Math.sin(t * omega) / sinO;
+    }
+    const x = s0 * a[0] + s1 * bx;
+    const y = s0 * a[1] + s1 * by;
+    const z = s0 * a[2] + s1 * bz;
+    const w = s0 * a[3] + s1 * bw;
+    const len = Math.hypot(x, y, z, w) || 1;
+    return [x / len, y / len, z / len, w / len];
   };
 
   function connect() {
@@ -43,13 +70,14 @@ export function createLiveClient({ onTelemetry, onConnectionChange }) {
       }
       if (msg.type === 'frame') {
         const now = performance.now();
-        if (currSnap) {
+        const jumpedReset = !currSnap || msg.step <= currSnap.step || (currSnap.stage !== undefined && msg.stage !== currSnap.stage);
+        if (currSnap && !jumpedReset) {
           const dt = now - lastRecvMs;
           if (dt > 2 && dt < 250) {
             estIntervalMs = estIntervalMs * 0.8 + dt * 0.2;
           }
         }
-        prevSnap = currSnap || msg;
+        prevSnap = jumpedReset ? msg : currSnap;
         currSnap = msg;
         lastRecvMs = now;
       } else if (msg.type === 'telemetry' || msg.type === 'init') {
@@ -75,7 +103,7 @@ export function createLiveClient({ onTelemetry, onConnectionChange }) {
     }, 1500);
   }
 
-  /** Return interpolated robot pose { pos, eul, joints, contacts, speed } for the current render frame. */
+  /** Return interpolated robot pose { pos, eul, quat, joints, contacts, speed } for the current render frame. */
   function samplePose(now = performance.now()) {
     if (!currSnap) return null;
     if (!prevSnap) return currSnap;
@@ -85,15 +113,19 @@ export function createLiveClient({ onTelemetry, onConnectionChange }) {
       lerp(prevSnap.pos[1], currSnap.pos[1], alpha),
       lerp(prevSnap.pos[2], currSnap.pos[2], alpha),
     ];
+    const quat = (prevSnap.quat && currSnap.quat)
+      ? slerpQuat(prevSnap.quat, currSnap.quat, alpha)
+      : null;
     const eul = [
-      lerp(prevSnap.eul[0], currSnap.eul[0], alpha),
+      lerpAngle(prevSnap.eul[0], currSnap.eul[0], alpha),
       lerpAngle(prevSnap.eul[1], currSnap.eul[1], alpha),
-      lerp(prevSnap.eul[2], currSnap.eul[2], alpha),
+      lerpAngle(prevSnap.eul[2], currSnap.eul[2], alpha),
     ];
     const joints = currSnap.joints.map((v, i) => lerp(prevSnap.joints[i], v, alpha));
     return {
       pos,
       eul,
+      quat,
       joints,
       contacts: currSnap.contacts,
       speed: currSnap.speed,

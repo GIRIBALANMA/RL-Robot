@@ -1,5 +1,6 @@
-/** Learning Lab HUD controller: isolated Stand/Walk modes, telemetry readouts, Canvas chart, and Model Vault. */
+/** Learning Lab HUD controller: isolated Stand/Stand Up/Walk modes, telemetry readouts, Canvas chart, and Model Vault. */
 export function createLearningHud({ liveClient, onModeChange }) {
+  const VALID_MODES = ['stand', 'getup', 'walk'];
   let mode = 'learn';
   let activeRobotMode = 'stand';
   let bestDistance = 0;
@@ -15,8 +16,11 @@ export function createLearningHud({ liveClient, onModeChange }) {
   const connText = document.getElementById('conn-text');
   const gpuText = document.getElementById('gpu-text');
 
-  const stageStandEl = document.getElementById('step-stand');
-  const stageWalkEl = document.getElementById('step-walk');
+  const stageEls = {
+    stand: document.getElementById('step-stand'),
+    getup: document.getElementById('step-getup'),
+    walk: document.getElementById('step-walk'),
+  };
   const milestoneEl = document.getElementById('milestone-banner');
 
   const valEp = document.getElementById('val-ep');
@@ -91,7 +95,7 @@ export function createLearningHud({ liveClient, onModeChange }) {
   stageBtns.forEach((btn) => {
     btn.addEventListener('click', () => {
       const st = btn.dataset.stage;
-      activeRobotMode = st === 'walk' ? 'walk' : 'stand';
+      activeRobotMode = VALID_MODES.includes(st) ? st : 'stand';
       stageBtns.forEach((b) => b.setAttribute('aria-pressed', String(b === btn)));
       liveClient.setRobotMode(activeRobotMode);
     });
@@ -248,10 +252,14 @@ export function createLearningHud({ liveClient, onModeChange }) {
     valLoss.textContent = Number(msg.policy_loss ?? 0).toFixed(3);
     valSteps.textContent = `${((msg.total_steps || 0) / 1000).toFixed(1)}k`;
 
-    const isWalk = (msg.active_mode || msg.curriculum_mode) === 'walk' || Number(msg.stage) === 1;
-    activeRobotMode = isWalk ? 'walk' : 'stand';
-    stageStandEl.dataset.state = isWalk ? 'queued' : 'active';
-    stageWalkEl.dataset.state = isWalk ? 'active' : 'queued';
+    const rawMode = msg.active_mode || msg.curriculum_mode;
+    const stageMap = { 0: 'stand', 1: 'walk', 2: 'getup' };
+    activeRobotMode = VALID_MODES.includes(rawMode) ? rawMode : (stageMap[Number(msg.stage)] || 'stand');
+    VALID_MODES.forEach((m) => {
+      if (stageEls[m]) {
+        stageEls[m].dataset.state = m === activeRobotMode ? 'active' : 'queued';
+      }
+    });
 
     speedBtns.forEach((b) =>
       b.setAttribute('aria-pressed', String(Number(b.dataset.speed) === Number(msg.speed_mult))),

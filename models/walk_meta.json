@@ -1,0 +1,20 @@
+{
+  "model_name": "walk",
+  "pt_file": "walk_ppo.pt",
+  "loaded_file": "walk_ppo.pt",
+  "pt_bytes": 1959413,
+  "onnx_file": "walk_policy.onnx",
+  "onnx_bytes": 333750,
+  "saved_at": "2026-11-11 16:55:56",
+  "episode": 3641,
+  "updates": 541,
+  "total_steps": 831408,
+  "stage": 1,
+  "avg_reward": 2339.43,
+  "avg_upright": 0.969,
+  "best_reward": 2772.03,
+  "best_distance": 32.05,
+  "source": "latest",
+  "has_best": true,
+  "device": "cuda"
+}

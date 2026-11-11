@@ -13,11 +13,18 @@ import torch
 from .physics import BipedPhysicsEnv
 from .ppo import PPOTrainer
 
-MODES = ("stand", "walk")
+MODES = ("stand", "getup", "walk")
+MODE_STAGE = {"stand": 0, "walk": 1, "getup": 2}
+MODE_LABELS = {"stand": "Stand", "getup": "Stand Up", "walk": "Walk"}
+MODE_DESC = {
+    "stand": "Stand & Push Recovery",
+    "getup": "Ground Get-Up",
+    "walk": "Walk Locomotion",
+}
 
 
 def _new_mode_state(mode: str) -> dict:
-    label = "Stand & Push Recovery" if mode == "stand" else "Walk Locomotion"
+    label = MODE_DESC.get(mode, mode)
     return {
         "episode": 0,
         "updates": 0,
@@ -36,7 +43,7 @@ def _new_mode_state(mode: str) -> dict:
 
 
 class LearningManager:
-    """Runs multi-threaded MuJoCo physics + separate isolated Stand and Walk GPU PPO trainers."""
+    """Runs multi-threaded MuJoCo physics + separate isolated Stand, Stand Up, and Walk GPU PPO trainers."""
 
     def __init__(
         self,
@@ -63,7 +70,7 @@ class LearningManager:
         # Runtime controls
         self.paused = False
         self.speed_mult = 1.0
-        self.active_mode = "stand"  # "stand" | "walk"
+        self.active_mode = "stand"  # "stand" | "getup" | "walk"
         self.play_mode = "train"  # "train" | "eval"
 
         self._subscribers: set[Callable[[dict], Awaitable[None]]] = set()
@@ -77,10 +84,10 @@ class LearningManager:
             if loaded:
                 self._apply_loaded_stats(mode, loaded)
                 ms = self.mode_states[mode]
-                label = "Walk" if mode == "walk" else "Stand"
+                label = MODE_LABELS[mode]
                 ms["last_milestone"] = f"Loaded {label} model (Ep {ms['episode']} · {mode}_ppo.pt)"
 
-        self.env.set_stage(0 if self.active_mode == "stand" else 1)
+        self.env.set_stage(MODE_STAGE[self.active_mode])
         self._sync_env_bests()
         self.env.reset()
 
@@ -142,7 +149,7 @@ class LearningManager:
             "active_mode": self.active_mode,
             "curriculum_mode": self.active_mode,
             "play_mode": self.play_mode,
-            "stage": 1 if self.active_mode == "walk" else 0,
+            "stage": MODE_STAGE[self.active_mode],
             "episode": ms["episode"],
             "updates": ms["updates"],
             "total_steps": ms["total_steps"],
@@ -194,7 +201,7 @@ class LearningManager:
                     "up": round(ms["avg_upright"], 3),
                     "d": round(ms["avg_distance"], 2),
                     "l": round(ms["avg_length"], 1),
-                    "st": 1 if mode == "walk" else 0,
+                    "st": MODE_STAGE[mode],
                 }
             )
 
@@ -205,7 +212,7 @@ class LearningManager:
             "episode": ms["episode"],
             "updates": ms["updates"],
             "total_steps": ms["total_steps"],
-            "stage": 1 if target == "walk" else 0,
+            "stage": MODE_STAGE[target],
             "best_reward": ms["best_reward"] if ms["best_reward"] > -1e8 else 0.0,
             "best_distance": ms["best_distance"],
             "avg_reward": ms["avg_reward"],
@@ -243,7 +250,7 @@ class LearningManager:
             ms["last_save_time"] = time.time()
             loaded_file = loaded.get("_loaded_file", f"{target}_best.pt")
             src_label = f"best local ({loaded_file})" if loaded.get("_loaded_source") == "best" else f"local ({loaded_file})"
-            label = "Walk" if target == "walk" else "Stand"
+            label = MODE_LABELS[target]
             ms["last_milestone"] = f"Loaded {label} {src_label} (Ep {ms['episode']} · {ms['avg_upright']:.0%})"
         await self._broadcast(self._stats_snapshot())
         return self.trainers[target].get_model_info()
@@ -274,16 +281,24 @@ class LearningManager:
             self.play_mode = data["play_mode"]
 
         req_mode = data.get("mode") or data.get("curriculum_mode")
+        hero_snap = None
         if req_mode in MODES and req_mode != self.active_mode:
             async with self._lock:
                 self.active_mode = req_mode
-                self.env.set_stage(1 if req_mode == "walk" else 0)
+                self.env.set_stage(MODE_STAGE[req_mode])
                 self._sync_env_bests()
                 self.env.reset()
                 self.env.consume_gpu_stats()
                 self._s_obs.copy_(self.env.get_obs())
                 self._rollout_reset_req = True
+                hero_snap = self.env.get_hero_snapshot()
+                hero_snap["type"] = "frame"
+                hero_snap["stage"] = MODE_STAGE[self.active_mode]
+                hero_snap["active_mode"] = self.active_mode
+                hero_snap["best_distance"] = round(self._ms["best_distance"], 2)
         await self._broadcast(self._stats_snapshot())
+        if hero_snap is not None:
+            await self._broadcast(hero_snap)
         return self._stats_snapshot()
 
     async def nudge(self, direction: str = "random") -> dict:
@@ -403,7 +418,7 @@ class LearningManager:
                                 "up": round(ms["avg_upright"], 3),
                                 "d": round(ms["avg_distance"], 2),
                                 "l": round(ms["avg_length"], 1),
-                                "st": 1 if self.active_mode == "walk" else 0,
+                                "st": MODE_STAGE[self.active_mode],
                             }
                         )
 
@@ -422,7 +437,7 @@ class LearningManager:
                 hero = self.env.get_hero_snapshot()
 
             hero["type"] = "frame"
-            hero["stage"] = 1 if self.active_mode == "walk" else 0
+            hero["stage"] = MODE_STAGE[self.active_mode]
             hero["active_mode"] = self.active_mode
             hero["best_distance"] = round(self._ms["best_distance"], 2)
             await self._broadcast(hero)

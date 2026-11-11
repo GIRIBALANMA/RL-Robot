@@ -14,7 +14,7 @@
   </asset>
 
   <worldbody>
-    <geom name="road" type="plane" pos="0 0 0.12" size="400 20 0.1" contype="1" conaffinity="1" friction="1.2 0.15 0.03" material="ground_mat" />
+    <geom name="road" type="plane" pos="0 0 0.12" size="400 20 0.1" contype="1" conaffinity="3" friction="1.2 0.15 0.03" material="ground_mat" />
 
     <body name="hips" pos="0 0 2.72">
       <freejoint name="root" />
@@ -34,7 +34,7 @@
         <body name="r_upper_arm" pos="0 0.90 1.50">
           <joint name="rs" type="hinge" axis="0 -1 0" range="-2.5 2.5" damping="1.2" armature="0.10" />
           <joint name="rr" type="hinge" axis="1 0 0" range="0.0 2.8" damping="1.2" armature="0.10" />
-          <geom name="r_uarm_geom" type="capsule" fromto="0 0 0 0 0 -1.30" size="0.17" mass="2.6" />
+          <geom name="r_uarm_geom" type="capsule" fromto="0 0 0 0 0 -1.30" size="0.17" mass="2.6" contype="2" conaffinity="0" />
           <body name="r_forearm" pos="0 0 -1.30">
             <joint name="re" type="hinge" axis="0 -1 0" range="0.0 2.4" damping="0.9" armature="0.08" />
             <geom name="r_farm_geom" type="capsule" fromto="0 0 0 0 0 -1.25" size="0.14" mass="2.0" contype="1" conaffinity="1" />
@@ -45,7 +45,7 @@
         <body name="l_upper_arm" pos="0 -0.90 1.50">
           <joint name="ls" type="hinge" axis="0 -1 0" range="-2.5 2.5" damping="1.2" armature="0.10" />
           <joint name="lr" type="hinge" axis="-1 0 0" range="0.0 2.8" damping="1.2" armature="0.10" />
-          <geom name="l_uarm_geom" type="capsule" fromto="0 0 0 0 0 -1.30" size="0.17" mass="2.6" />
+          <geom name="l_uarm_geom" type="capsule" fromto="0 0 0 0 0 -1.30" size="0.17" mass="2.6" contype="2" conaffinity="0" />
           <body name="l_forearm" pos="0 0 -1.30">
             <joint name="le" type="hinge" axis="0 -1 0" range="0.0 2.4" damping="0.9" armature="0.08" />
             <geom name="l_farm_geom" type="capsule" fromto="0 0 0 0 0 -1.25" size="0.14" mass="2.0" contype="1" conaffinity="1" />
@@ -57,7 +57,7 @@
       <body name="r_thigh" pos="0 0.30 -0.15">
         <joint name="rha" type="hinge" axis="1 0 0" range="-0.45 0.85" damping="2.2" armature="0.15" />
         <joint name="rh" type="hinge" axis="0 -1 0" range="-1.2 1.2" damping="2.4" armature="0.18" />
-        <geom name="r_thigh_geom" type="capsule" fromto="0 0 0 0 0 -1.20" size="0.21" mass="7.0" />
+        <geom name="r_thigh_geom" type="capsule" fromto="0 0 0 0 0 -1.20" size="0.21" mass="7.0" contype="2" conaffinity="0" />
         <body name="r_shin" pos="0 0 -1.20">
           <joint name="rk" type="hinge" axis="0 1 0" range="0.0 2.2" damping="2.0" armature="0.15" />
           <geom name="r_shin_geom" type="capsule" fromto="0 0 0 0 0 -1.15" size="0.17" mass="4.5" />
@@ -72,7 +72,7 @@
       <body name="l_thigh" pos="0 -0.30 -0.15">
         <joint name="lha" type="hinge" axis="-1 0 0" range="-0.45 0.85" damping="2.2" armature="0.15" />
         <joint name="lh" type="hinge" axis="0 -1 0" range="-1.2 1.2" damping="2.4" armature="0.18" />
-        <geom name="l_thigh_geom" type="capsule" fromto="0 0 0 0 0 -1.20" size="0.21" mass="7.0" />
+        <geom name="l_thigh_geom" type="capsule" fromto="0 0 0 0 0 -1.20" size="0.21" mass="7.0" contype="2" conaffinity="0" />
         <body name="l_shin" pos="0 0 -1.20">
           <joint name="lk" type="hinge" axis="0 1 0" range="0.0 2.2" damping="2.0" armature="0.15" />
           <geom name="l_shin_geom" type="capsule" fromto="0 0 0 0 0 -1.15" size="0.17" mass="4.5" />

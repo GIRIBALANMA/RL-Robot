@@ -1,0 +1,20 @@
+{
+  "model_name": "stand",
+  "pt_file": "stand_ppo.pt",
+  "loaded_file": "stand_ppo.pt",
+  "pt_bytes": 1959472,
+  "onnx_file": "stand_policy.onnx",
+  "onnx_bytes": 333750,
+  "saved_at": "2026-11-11 16:57:17",
+  "episode": 3782,
+  "updates": 665,
+  "total_steps": 1023962,
+  "stage": 0,
+  "avg_reward": 934.55,
+  "avg_upright": 0.888,
+  "best_reward": 1488.4,
+  "best_distance": 0.0,
+  "source": "latest",
+  "has_best": true,
+  "device": "cuda"
+}

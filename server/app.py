@@ -13,8 +13,9 @@ from .trainer import LearningManager
 ROOT_DIR = Path(__file__).resolve().parent.parent
 MODELS_DIR = ROOT_DIR / "models"
 ALLOWED_DOWNLOADS = {
-    "stand_ppo.pt", "stand_best.pt", "stand_policy.onnx", "stand_meta.json",
-    "walk_ppo.pt", "walk_best.pt", "walk_policy.onnx", "walk_meta.json",
+    f"{mode}{ext}"
+    for mode in ("stand", "getup", "walk")
+    for ext in ("_ppo.pt", "_best.pt", "_policy.onnx", "_meta.json")
 }
 
 
@@ -57,7 +58,7 @@ def create_app() -> web.Application:
         try:
             body = await req.json()
             m = body.get("mode")
-            return str(m) if m in ("stand", "walk") else None
+            return str(m) if m in ("stand", "getup", "walk") else None
         except Exception:
             return None
 

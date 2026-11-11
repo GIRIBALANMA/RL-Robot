@@ -1,0 +1,20 @@
+{
+  "model_name": "getup",
+  "pt_file": "getup_ppo.pt",
+  "loaded_file": "getup_ppo.pt",
+  "pt_bytes": 1959472,
+  "onnx_file": "getup_policy.onnx",
+  "onnx_bytes": 333750,
+  "saved_at": "2026-11-11 16:56:21",
+  "episode": 1661,
+  "updates": 500,
+  "total_steps": 769920,
+  "stage": 2,
+  "avg_reward": 554.78,
+  "avg_upright": 0.074,
+  "best_reward": 1178.28,
+  "best_distance": 0.0,
+  "source": "latest",
+  "has_best": true,
+  "device": "cuda"
+}

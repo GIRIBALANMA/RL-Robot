@@ -106,8 +106,12 @@ export function applyLivePose({ bot, hips, joints }, snap) {
   bot.position.set(snap.pos[0], snap.pos[1] - 2.55, snap.pos[2]);
   bot.rotation.set(0, 0, 0);
   hips.position.y = 2.55;
-  hips.rotation.order = 'YXZ';
-  hips.rotation.set(snap.eul[0], snap.eul[1], snap.eul[2]);
+  if (snap.quat) {
+    hips.quaternion.set(snap.quat[0], snap.quat[1], snap.quat[2], snap.quat[3]);
+  } else {
+    hips.rotation.order = 'YXZ';
+    hips.rotation.set(snap.eul[0], snap.eul[1], snap.eul[2]);
+  }
   for (let i = 0; i < joints.length; i++) {
     const j = joints[i];
     j[2].rotation[j[3]] = snap.joints[i] * j[6];

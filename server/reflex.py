@@ -47,3 +47,18 @@ def mj_quat_to_three_eul_yxz(quat_wxyz: np.ndarray) -> tuple[float, float, float
     yaw = math.atan2(r00, -r10)
     roll = math.atan2(r21, r22)
     return pitch, yaw, roll
+
+
+_INV_SQRT2 = math.sqrt(0.5)
+
+
+def mj_quat_to_three_quat_xyzw(quat_wxyz: np.ndarray) -> tuple[float, float, float, float]:
+    """Convert MuJoCo hips quaternion [w,x,y,z] directly into singularity-free Three.js [qx,qy,qz,qw]."""
+    w, x, y, z = float(quat_wxyz[0]), float(quat_wxyz[1]), float(quat_wxyz[2]), float(quat_wxyz[3])
+    wx, xx, yx, zx = w, x, z, -y
+    qw = _INV_SQRT2 * (wx - yx)
+    qx = _INV_SQRT2 * (xx - zx)
+    qy = _INV_SQRT2 * (wx + yx)
+    qz = _INV_SQRT2 * (zx + xx)
+    norm = math.sqrt(qx * qx + qy * qy + qz * qz + qw * qw) or 1.0
+    return qx / norm, qy / norm, qz / norm, qw / norm
