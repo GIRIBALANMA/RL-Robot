@@ -99,7 +99,7 @@ class ActorCritic(nn.Module):
         value = self.critic(x).squeeze(-1)
         if deterministic:
             return mean, torch.zeros(obs.shape[0], device=obs.device), value
-        log_std = torch.clamp(self.log_std, -2.5, -0.4)
+        log_std = torch.clamp(self.log_std, -2.6, -1.05)
         std = torch.exp(log_std)
         raw_act = mean + std * torch.randn_like(mean)
         log_prob = -0.5 * (
@@ -114,7 +114,7 @@ class ActorCritic(nn.Module):
         x = self.obs_norm(obs)
         mean = self.actor(x)
         value = self.critic(x).squeeze(-1)
-        std = torch.exp(torch.clamp(self.log_std, -2.5, -0.4))
+        std = torch.exp(torch.clamp(self.log_std, -2.6, -1.05))
         dist = Normal(mean, std)
         log_prob = dist.log_prob(actions).sum(dim=-1)
         entropy = dist.entropy().sum(dim=-1)
@@ -140,7 +140,7 @@ class PPOTrainer:
         self,
         obs_dim: int = 49,
         act_dim: int = 17,
-        lr: float = 4e-4,
+        lr: float = 5e-4,
         gamma: float = 0.99,
         gae_lambda: float = 0.95,
         clip_eps: float = 0.2,
@@ -215,7 +215,7 @@ class PPOTrainer:
                 pg_loss = -torch.min(surr1, surr2).mean()
                 vf_loss = 0.5 * ((new_val - b_ret[idx]) ** 2).mean()
                 ent = entropy.mean()
-                loss = pg_loss + 0.5 * vf_loss - 0.008 * ent
+                loss = pg_loss + 0.5 * vf_loss - 0.0002 * ent
 
                 self.optimizer.zero_grad(set_to_none=True)
                 loss.backward()

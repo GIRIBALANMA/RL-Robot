@@ -21,7 +21,7 @@ class LearningManager:
         self,
         models_dir: Path | str = "models",
         num_envs: int = 64,
-        rollout_steps: int = 32,
+        rollout_steps: int = 48,
     ):
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.env = BipedPhysicsEnv(num_envs=num_envs, device=self.device)
@@ -377,9 +377,9 @@ class LearningManager:
                         if (
                             self.curriculum_mode == "auto"
                             and self.env.stage == 0
-                            and self.updates >= 26
-                            and self.avg_upright >= 0.72
-                            and self.avg_length >= 70.0
+                            and self.updates >= 30
+                            and self.avg_upright >= 0.68
+                            and self.avg_length >= 85.0
                         ):
                             self.env.set_stage(1)
                             self.save_now(export_onnx=True)

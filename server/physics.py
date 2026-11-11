@@ -142,7 +142,7 @@ class BipedPhysicsEnv:
 
         self.stage = 0  # 0 = stand/balance, 1 = walk
         self.stage_t = torch.zeros(1, device=self.device)
-        self.target_speed = 2.6
+        self.target_speed = 1.65
 
         # State tensors
         n = num_envs
@@ -172,6 +172,18 @@ class BipedPhysicsEnv:
         self.best_dist_t = torch.zeros(1, device=self.device)
         self.hero_vec = torch.zeros(27, device=self.device)
 
+        self.crouch_delta = torch.zeros(self.ACT_DIM, device=self.device)
+        self.crouch_delta[9] = 0.36   # rh forward flex
+        self.crouch_delta[11] = 0.68  # rk knee bend
+        self.crouch_delta[12] = 0.36  # lh forward flex
+        self.crouch_delta[14] = 0.68  # lk knee bend
+        self.crouch_delta[15] = -0.32 # ra ankle dorsiflexion
+        self.crouch_delta[16] = -0.32 # la ankle dorsiflexion
+        self.crouch_delta[3] = -0.18  # rs arms slightly back
+        self.crouch_delta[6] = -0.18  # ls arms slightly back
+        self.crouch_delta[4] = 0.20   # rr arms slightly out
+        self.crouch_delta[7] = 0.20   # lr arms slightly out
+
         # Precompute exact nominal standing height so feet rest cleanly on road on branchless resets
         self.pos[:, 1] = 2.70
         self.eul[:, 1] = math.pi / 2.0
@@ -194,36 +206,41 @@ class BipedPhysicsEnv:
         self.ang_vel[env_idx, 2] -= dvz * 0.4
 
     def _reset_masked(self, done: torch.Tensor) -> None:
-        """Branchless pure-GPU masked reset (zero CPU-GPU syncs, CUDA-Graph safe)."""
+        """Branchless pure-GPU masked reset: Stand starts crouched/tilted so rising & balance are visibly learned."""
         n = self.num_envs
         m1 = done.unsqueeze(-1)
+        stand_w = 1.0 - self.stage_t[0]
+        crouch_frac = stand_w * (0.35 + 0.45 * torch.rand(n, device=self.device))
+
         rand_pos = torch.stack(
             [
                 torch.zeros(n, device=self.device),
-                self.nom_spawn_y + (torch.rand(n, device=self.device) - 0.5) * 0.02,
-                (torch.rand(n, device=self.device) - 0.5) * 0.35,
+                self.nom_spawn_y - 0.13 * crouch_frac + (torch.rand(n, device=self.device) - 0.5) * 0.015,
+                (torch.rand(n, device=self.device) - 0.5) * 0.30,
             ],
             dim=-1,
         )
         rand_vel = torch.stack(
             [
-                (torch.rand(n, device=self.device) - 0.5) * 0.22,
+                (torch.rand(n, device=self.device) - 0.5) * (0.20 + 0.35 * stand_w),
                 torch.zeros(n, device=self.device),
-                (torch.rand(n, device=self.device) - 0.5) * 0.22,
+                (torch.rand(n, device=self.device) - 0.5) * (0.20 + 0.35 * stand_w),
             ],
             dim=-1,
         )
         rand_eul = torch.stack(
             [
-                (torch.rand(n, device=self.device) - 0.5) * 0.12,
+                (torch.rand(n, device=self.device) - 0.5) * (0.10 + 0.22 * stand_w) + 0.08 * crouch_frac,
                 math.pi / 2.0 + (torch.rand(n, device=self.device) - 0.5) * 0.10,
-                (torch.rand(n, device=self.device) - 0.5) * 0.12,
+                (torch.rand(n, device=self.device) - 0.5) * (0.10 + 0.18 * stand_w),
             ],
             dim=-1,
         )
-        rand_ang = (torch.rand(n, 3, device=self.device) - 0.5) * 0.30
+        rand_ang = (torch.rand(n, 3, device=self.device) - 0.5) * (0.20 + 0.30 * stand_w)
         q0 = torch.clamp(
-            self.j_nom.unsqueeze(0) + (torch.rand(n, self.ACT_DIM, device=self.device) - 0.5) * 0.06,
+            self.j_nom.unsqueeze(0)
+            + crouch_frac.unsqueeze(-1) * self.crouch_delta.unsqueeze(0)
+            + (torch.rand(n, self.ACT_DIM, device=self.device) - 0.5) * 0.08,
             self.j_min,
             self.j_max,
         )
@@ -468,7 +485,7 @@ class BipedPhysicsEnv:
             self.q.copy_(torch.clamp(q_next, self.j_min, self.j_max))
 
         self.step_count += 1
-        self.gait_phase.copy_((self.gait_phase + dt_ctrl * 6.8) % (2.0 * math.pi))
+        self.gait_phase.copy_((self.gait_phase + dt_ctrl * 5.0) % (2.0 * math.pi))
         self._update_foot_metrics()
 
         # Compute human-like rewards & terminations
@@ -525,42 +542,40 @@ class BipedPhysicsEnv:
 
         vx = self.vel[:, 0]
         vz = self.vel[:, 2]
-        vel_match = torch.exp(-1.1 * (vx - self.target_speed) ** 2)
-        fwd_progress = torch.clamp(vx, -1.0, 3.6) * 0.65
+        moving_gate = torch.clamp(vx / 0.75, 0.0, 1.0)
+        vel_match = 3.2 * torch.exp(-1.1 * (vx - self.target_speed) ** 2)
+        fwd_progress = 2.6 * torch.clamp(vx, -1.2, 2.5)
+        stand_still_pen = 0.85 * torch.exp(-3.5 * vx * vx)
         heading = torch.exp(-3.5 * yaw_err * yaw_err - 0.9 * vz * vz)
         arm_counter_err = (self.q[:, 3] + 0.90 * self.q[:, 9]) ** 2 + (self.q[:, 6] + 0.90 * self.q[:, 12]) ** 2
-        arm_swing_reward = 0.85 * torch.exp(-3.5 * arm_counter_err)
+        arm_swing_reward = 0.95 * torch.exp(-3.5 * arm_counter_err)
         waist_natural = 0.25 * torch.exp(-6.0 * (self.q[:, 2] - 0.14 * (self.q[:, 12] - self.q[:, 9])) ** 2)
         s_phase = torch.sin(self.gait_phase)
         c_phase = torch.cos(self.gait_phase)
         # Dynamic knee flexion on swing leg + ankle compensation (matching control.md gait!)
         target_rk = 0.20 + torch.clamp(c_phase, min=0.0) * 0.65
         target_lk = 0.20 + torch.clamp(-c_phase, min=0.0) * 0.65
-        knee_flex_walk = 0.50 * torch.exp(-3.0 * ((self.q[:, 11] - target_rk) ** 2 + (self.q[:, 14] - target_lk) ** 2))
+        knee_flex_walk = 0.55 * torch.exp(-3.0 * ((self.q[:, 11] - target_rk) ** 2 + (self.q[:, 14] - target_lk) ** 2))
         ankle_flex_walk = 0.35 * torch.exp(
             -3.0 * ((self.q[:, 15] - 0.6 * (self.q[:, 9] - self.q[:, 11])) ** 2 + (self.q[:, 16] - 0.6 * (self.q[:, 12] - self.q[:, 14])) ** 2)
         )
         stride_sep = torch.clamp(torch.abs(self.q[:, 9] - self.q[:, 12]), 0.0, 0.9)
         swing_lift = torch.clamp(torch.abs(self.foot_heights[:, 0] - self.foot_heights[:, 1]), 0.0, 0.35)
-        gait_guide = 0.35 * stride_sep + 0.75 * swing_lift + 0.15 * s_phase * (self.q[:, 9] - self.q[:, 12])
+        gait_guide = 0.50 * stride_sep + 0.95 * swing_lift + 0.35 * s_phase * (self.q[:, 9] - self.q[:, 12])
+        posture_base = 1.05 * upright + 0.70 * height_ok + 0.45 * heading + 0.25 * arm_balance_pose + 0.20 * elbow_natural + 0.20 * hip_side_pose
+        gait_bonus = moving_gate * (
+            arm_swing_reward + knee_flex_walk + ankle_flex_walk + gait_guide + waist_natural
+        )
         rew_walk = (
-            0.35
-            + 1.5 * vel_match
+            0.10
+            + vel_match
             + fwd_progress
-            + 1.25 * upright
-            + 0.85 * height_ok
-            + 0.45 * heading
-            + 0.25 * any_foot
-            + arm_swing_reward
-            + 0.30 * arm_balance_pose
-            + 0.30 * elbow_natural
-            + knee_flex_walk
-            + ankle_flex_walk
-            + 0.25 * hip_side_pose
-            + waist_natural
-            + gait_guide
-            + 0.15 * ang_calm
-            - 0.8 * torso_straight_pen
+            + (0.30 + 0.70 * moving_gate) * posture_base
+            + 0.20 * any_foot
+            + gait_bonus
+            + 0.10 * ang_calm
+            - stand_still_pen
+            - 0.65 * torso_straight_pen
             - energy_pen
         )
 
@@ -568,7 +583,7 @@ class BipedPhysicsEnv:
         reward = (1.0 - stage_w) * rew_stand + stage_w * rew_walk
 
         fallen = (
-            (self.pos[:, 1] < 1.65)
+            (self.pos[:, 1] < 1.50)
             | (torch.abs(pitch) > 0.95)
             | (torch.abs(roll) > 0.95)
             | (torch.abs(self.pos[:, 2]) > 3.7)
