@@ -386,8 +386,8 @@ class LearningManager:
                             self.curriculum_mode == "auto"
                             and self.env.stage == 0
                             and self.updates >= 30
-                            and self.avg_upright >= 0.68
-                            and self.avg_length >= 85.0
+                            and self.avg_upright >= 0.92
+                            and self.avg_length >= 300.0
                         ):
                             self.env.set_stage(1)
                             self.save_now(export_onnx=True)
