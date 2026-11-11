@@ -1,0 +1,102 @@
+:root {
+  color-scheme: dark;
+  --panel: rgba(12, 15, 24, 0.8);
+  --fg: #e8ecf4;
+  --mut: #9aa3b5;
+  --acc: #ff3b2f;
+  box-sizing: border-box;
+  padding-top: env(safe-area-inset-top, 0px);
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+}
+
+html,
+body {
+  height: 100%;
+  margin: 0;
+  background: #1b2a52;
+  overflow: hidden;
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  color: var(--fg);
+}
+
+canvas {
+  display: block;
+  position: fixed;
+  inset: 0;
+}
+
+.hud {
+  position: fixed;
+  left: 12px;
+  top: calc(env(safe-area-inset-top, 0px) + 10px);
+  max-width: 260px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--fg);
+  text-shadow: 0 1px 4px #000;
+}
+
+.hud b {
+  font-size: 15px;
+  letter-spacing: 0.12em;
+  color: var(--acc);
+}
+
+.panel {
+  position: fixed;
+  right: 10px;
+  top: calc(env(safe-area-inset-top, 0px) + 10px);
+  width: 210px;
+  max-height: 62vh;
+  overflow: auto;
+  background: var(--panel);
+  border: 1px solid #ffffff22;
+  border-radius: 10px;
+  padding: 8px 10px;
+  backdrop-filter: blur(6px);
+  font-size: 11px;
+}
+
+.panel summary {
+  cursor: pointer;
+  font-weight: 600;
+  font-size: 12px;
+}
+
+.panel label {
+  display: block;
+  margin-top: 6px;
+  color: var(--mut);
+}
+
+.panel input {
+  width: 100%;
+  accent-color: var(--acc);
+}
+
+.bar {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: calc(env(safe-area-inset-bottom, 0px) + 14px);
+  display: flex;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.bar button {
+  background: var(--panel);
+  color: var(--fg);
+  border: 1px solid #ffffff33;
+  border-radius: 10px;
+  padding: 12px 18px;
+  font-size: 15px;
+  touch-action: none;
+  user-select: none;
+  cursor: pointer;
+}
+
+.bar button:active {
+  background: var(--acc);
+}

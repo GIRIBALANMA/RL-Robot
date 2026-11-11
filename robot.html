@@ -1,0 +1,23 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Steel Sentinel – Jointed Robot on the Road</title>
+  <link rel="stylesheet" href="styles/main.css">
+</head>
+<body>
+  <div class="hud"><b>STEEL SENTINEL</b><br>A / D or ← / → walk · Shift run · W wave · ↑ jump · ↓ prone (hold)<br>Drag to orbit · wheel or pinch to zoom<br>Open “Joints” to pose each joint.</div>
+  <details class="panel" open><summary>Joints</summary><div id="sl"></div></details>
+  <div class="bar">
+    <button type="button" id="bl">◀</button>
+    <button type="button" id="bj">Jump</button>
+    <button type="button" id="bp">Prone</button>
+    <button type="button" id="bw">Wave</button>
+    <button type="button" id="br">▶</button>
+    <button type="button" id="bx">Reset</button>
+  </div>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+  <script type="module" src="src/main.js"></script>
+</body>
+</html>
