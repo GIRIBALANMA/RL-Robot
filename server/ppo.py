@@ -99,7 +99,7 @@ class ActorCritic(nn.Module):
         value = self.critic(x).squeeze(-1)
         if deterministic:
             return mean, torch.zeros(obs.shape[0], device=obs.device), value
-        log_std = torch.clamp(self.log_std, -2.6, -1.05)
+        log_std = torch.clamp(self.log_std, -2.8, -1.05)
         std = torch.exp(log_std)
         raw_act = mean + std * torch.randn_like(mean)
         log_prob = -0.5 * (
@@ -114,7 +114,7 @@ class ActorCritic(nn.Module):
         x = self.obs_norm(obs)
         mean = self.actor(x)
         value = self.critic(x).squeeze(-1)
-        std = torch.exp(torch.clamp(self.log_std, -2.6, -1.05))
+        std = torch.exp(torch.clamp(self.log_std, -2.8, -1.05))
         dist = Normal(mean, std)
         log_prob = dist.log_prob(actions).sum(dim=-1)
         entropy = dist.entropy().sum(dim=-1)
@@ -165,6 +165,7 @@ class PPOTrainer:
         self.pt_path = self.models_dir / "steel_sentinel_ppo.pt"
         self.onnx_path = self.models_dir / "steel_sentinel_policy.onnx"
         self.meta_path = self.models_dir / "checkpoints.json"
+        self.update_count = 0
 
     def update(
         self,
@@ -204,6 +205,9 @@ class PPOTrainer:
         ent_sum = torch.zeros(1, device=self.device)
         steps = 0
 
+        actor_params = list(self.model.actor.parameters()) + [self.model.log_std]
+        critic_params = list(self.model.critic.parameters())
+
         for _ in range(self.epochs):
             perm = torch.randperm(total, device=self.device)
             for start in range(0, total, batch_size):
@@ -213,13 +217,15 @@ class PPOTrainer:
                 surr1 = ratio * b_adv[idx]
                 surr2 = torch.clamp(ratio, 1.0 - self.clip_eps, 1.0 + self.clip_eps) * b_adv[idx]
                 pg_loss = -torch.min(surr1, surr2).mean()
-                vf_loss = 0.5 * ((new_val - b_ret[idx]) ** 2).mean()
+                vf_loss = 0.5 * nn.functional.smooth_l1_loss(new_val, b_ret[idx], beta=10.0)
                 ent = entropy.mean()
-                loss = pg_loss + 0.5 * vf_loss - 0.0002 * ent
+                loss = pg_loss + 0.5 * vf_loss
 
                 self.optimizer.zero_grad(set_to_none=True)
                 loss.backward()
-                nn.utils.clip_grad_norm_(self.model.parameters(), 0.7)
+                # Clip actor and critic separately so large critic value scales never choke actor/log_std learning
+                nn.utils.clip_grad_norm_(actor_params, 0.5)
+                nn.utils.clip_grad_norm_(critic_params, 1.0)
                 self.optimizer.step()
 
                 pg_sum = pg_sum + pg_loss.detach()
@@ -228,6 +234,14 @@ class PPOTrainer:
                 steps += 1
 
         vals = torch.cat([pg_sum, vf_sum, ent_sum]).tolist()
+        self.update_count += 1
+        # Smoothly lower exploration ceiling toward log_std=-1.85 (std~0.16) without shocking existing weights
+        frac = min(1.0, self.update_count / 180.0)
+        target_max = -1.05 - 0.80 * frac
+        with torch.no_grad():
+            cur_max = float(self.model.log_std.max().item())
+            next_max = max(target_max, cur_max - 0.015)
+            self.model.log_std.clamp_(-2.8, next_max)
         denom = max(1, steps)
         return {
             "policy_loss": round(vals[0] / denom, 4),
@@ -289,12 +303,15 @@ class PPOTrainer:
         self.model.load_state_dict(payload["model_state"])
         if "optimizer_state" in payload:
             self.optimizer.load_state_dict(payload["optimizer_state"])
-        return payload.get("stats", {})
+        stats = payload.get("stats", {})
+        self.update_count = int(stats.get("updates", 0))
+        return stats
 
     def reset_weights(self) -> None:
         """Re-initialize fresh untrained neural network weights in-place."""
         self.model.init_weights()
         self.optimizer.state.clear()
+        self.update_count = 0
 
     def get_model_info(self) -> dict | None:
         if self.meta_path.exists():

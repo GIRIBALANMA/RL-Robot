@@ -199,11 +199,11 @@ class BipedPhysicsEnv:
         self.stage_t.fill_(float(self.stage))
 
     def apply_impulse(self, dvx: float = 0.0, dvz: float = 0.0, env_idx: int = 0) -> None:
-        """Apply a physical external push impulse to test balance recovery."""
+        """Apply a physical external push impulse matching right-hand chest torque axes."""
         self.vel[env_idx, 0] += dvx
         self.vel[env_idx, 2] += dvz
-        self.ang_vel[env_idx, 0] += dvx * 0.4
-        self.ang_vel[env_idx, 2] -= dvz * 0.4
+        self.ang_vel[env_idx, 2] -= dvx * 0.22
+        self.ang_vel[env_idx, 0] += dvz * 0.22
 
     def _reset_masked(self, done: torch.Tensor) -> None:
         """Branchless pure-GPU masked reset: Stand starts crouched/tilted so rising & balance are visibly learned."""
@@ -486,16 +486,49 @@ class BipedPhysicsEnv:
 
         self.step_count += 1
         self.gait_phase.copy_((self.gait_phase + dt_ctrl * 5.0) % (2.0 * math.pi))
+
+        # Periodic directional pushes in Stand training (Stage 0) only after standing upright & calm
+        n = self.num_envs
+        stand_w = 1.0 - self.stage_t[0]
+        can_push = (
+            (self.step_count > 60)
+            & (torch.abs(self.eul[:, 0]) < 0.14)
+            & (torch.abs(self.eul[:, 2]) < 0.14)
+            & (torch.abs(self.vel[:, 0]) < 0.25)
+            & (torch.abs(self.vel[:, 2]) < 0.25)
+        )
+        trigger = (can_push & (torch.rand(n, device=self.device) < 0.0040)).float() * stand_w
+        is_sag = (torch.rand(n, device=self.device) < 0.5).float()
+        p_sign = torch.where(torch.rand(n, device=self.device) < 0.5, -1.0, 1.0)
+        sag_p = 0.70 + 0.45 * torch.rand(n, device=self.device)
+        lat_p = 0.58 + 0.34 * torch.rand(n, device=self.device)
+        dvx_p = trigger * is_sag * p_sign * sag_p
+        dvz_p = trigger * (1.0 - is_sag) * p_sign * lat_p
+        self.vel[:, 0].add_(dvx_p)
+        self.vel[:, 2].add_(dvz_p)
+        self.ang_vel[:, 2].sub_(dvx_p * 0.22)
+        self.ang_vel[:, 0].add_(dvz_p * 0.22)
+
         self._update_foot_metrics()
 
         # Compute human-like rewards & terminations
         pitch = self.eul[:, 0]
         yaw_err = _wrap_angle(self.eul[:, 1] - math.pi / 2.0)
         roll = self.eul[:, 2]
-        # Straight upright torso posture (allows slight ~4 deg dynamic lean while penalizing slouch)
+        vx = self.vel[:, 0]
+        vz = self.vel[:, 2]
+        settled = (self.step_count > 55).float()
+        sag_sig = vx + 1.4 * pitch * settled
+        lat_sig = vz + 1.5 * roll * settled
+        sag_mag = torch.clamp((torch.abs(sag_sig) - 0.18) / 0.75, 0.0, 1.0)
+        lat_mag = torch.clamp((torch.abs(lat_sig) - 0.22) / 0.70, 0.0, 1.0)
+        calm_w = 1.0 - torch.maximum(sag_mag, lat_mag)
+
+        # Straight upright torso posture (allows knee/hip dip when absorbing a directional push)
         upright = torch.exp(-6.5 * (pitch * pitch + roll * roll))
         torso_straight_pen = 0.65 * (pitch * pitch + roll * roll) + 0.25 * (self.q[:, 0] ** 2 + self.q[:, 1] ** 2)
-        height_ok = torch.exp(-7.0 * (self.pos[:, 1] - 2.68) ** 2)
+        target_h = 2.68 - 0.14 * (1.0 - calm_w)
+        height_ok = torch.exp(-7.0 * (self.pos[:, 1] - target_h) ** 2)
         ang_calm = torch.exp(-0.15 * (self.ang_vel ** 2).sum(dim=-1))
 
         energy_pen = 0.010 * (action ** 2).mean(dim=-1) + 0.020 * ((action - self.prev_act) ** 2).mean(dim=-1)
@@ -511,37 +544,48 @@ class BipedPhysicsEnv:
             -3.0 * ((self.q[:, 4] - desired_rr) ** 2 + (self.q[:, 7] - desired_lr) ** 2)
         )
         elbow_natural = torch.exp(-2.5 * ((self.q[:, 5] - 0.42) ** 2 + (self.q[:, 8] - 0.42) ** 2))
-        # Soft unlocked knees + responsive ankles + lateral hip brace against roll
-        knee_flex_stand = torch.exp(-3.5 * ((self.q[:, 11] - 0.24) ** 2 + (self.q[:, 14] - 0.24) ** 2))
-        ankle_flex_stand = torch.exp(-3.5 * ((self.q[:, 15] + 0.12) ** 2 + (self.q[:, 16] + 0.12) ** 2))
-        desired_rha = torch.clamp(0.04 + torch.clamp(-roll, min=0.0) * 1.4, -0.15, 0.55)
-        desired_lha = torch.clamp(0.04 + torch.clamp(roll, min=0.0) * 1.4, -0.15, 0.55)
-        hip_side_pose = torch.exp(-4.0 * ((self.q[:, 10] - desired_rha) ** 2 + (self.q[:, 13] - desired_lha) ** 2))
+        # Directional human push-recovery targets in Stand (front/back knee-step + left/right hip abduct/adduct)
+        push_back = (sag_sig < -0.18).float()
+        push_fwd = (sag_sig > 0.18).float()
+        push_from_right = (lat_sig > 0.22).float()
+        push_from_left = (lat_sig < -0.22).float()
+        t_rh = 0.12 + 0.38 * push_fwd + 0.06 * push_back
+        t_lh = 0.12 - 0.56 * push_back - 0.28 * push_fwd
+        t_rk = 0.24 + 0.40 * push_fwd + 0.06 * push_back + 0.22 * push_from_left
+        t_lk = 0.24 + 0.46 * push_back + 0.10 * push_fwd + 0.22 * push_from_right
+        sag_recover_pose = torch.exp(
+            -2.8 * ((self.q[:, 9] - t_rh) ** 2 + (self.q[:, 12] - t_lh) ** 2 + (self.q[:, 11] - t_rk) ** 2 + (self.q[:, 14] - t_lk) ** 2)
+        )
 
-        # Blend Stand vs Walk reward purely via GPU scalar so CUDA Graph never branches
-        still_bonus = torch.exp(-0.8 * (self.vel[:, 0] ** 2 + self.vel[:, 2] ** 2))
+        t_rha = 0.04 + 0.44 * push_from_left - 0.18 * push_from_right
+        t_lha = 0.04 + 0.44 * push_from_right - 0.18 * push_from_left
+        lat_recover_pose = torch.exp(-3.5 * ((self.q[:, 10] - t_rha) ** 2 + (self.q[:, 13] - t_lha) ** 2))
+
+        ankle_flex_stand = torch.exp(-3.5 * ((self.q[:, 15] + 0.12) ** 2 + (self.q[:, 16] + 0.12) ** 2))
+        still_bonus = torch.exp(-0.8 * (vx * vx + vz * vz))
         waist_straight = torch.exp(-8.0 * (self.q[:, 2] ** 2))
         arm_pitch_calm = torch.exp(-2.0 * ((self.q[:, 3] + 1.5 * pitch) ** 2 + (self.q[:, 6] + 1.5 * pitch) ** 2))
         rew_stand = (
             0.45
             + 1.5 * upright
-            + 1.2 * height_ok
-            + 0.4 * both_feet
-            + 0.35 * still_bonus
+            + 1.15 * height_ok
+            + 0.40 * calm_w * both_feet
+            + 0.35 * calm_w * still_bonus
             + 0.35 * waist_straight
             + 0.45 * arm_balance_pose
             + 0.35 * arm_pitch_calm
             + 0.25 * elbow_natural
-            + 0.25 * knee_flex_stand
+            + (0.40 + 0.55 * sag_mag) * sag_recover_pose
+            + (0.40 + 0.55 * lat_mag) * lat_recover_pose
             + 0.20 * ankle_flex_stand
-            + 0.25 * hip_side_pose
             + 0.20 * ang_calm
             - torso_straight_pen
             - energy_pen
         )
 
-        vx = self.vel[:, 0]
-        vz = self.vel[:, 2]
+        desired_rha = t_rha
+        desired_lha = t_lha
+        hip_side_pose = lat_recover_pose
         moving_gate = torch.clamp(vx / 0.75, 0.0, 1.0)
         vel_match = 3.2 * torch.exp(-1.1 * (vx - self.target_speed) ** 2)
         fwd_progress = 2.6 * torch.clamp(vx, -1.2, 2.5)

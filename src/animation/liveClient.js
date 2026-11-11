@@ -124,7 +124,7 @@ export function createLiveClient({ onTelemetry, onConnectionChange }) {
     setSpeed: (speed_mult) => sendWs({ action: 'control', speed_mult }),
     setStageMode: (curriculum_mode) => sendWs({ action: 'control', curriculum_mode }),
     setPlayMode: (play_mode) => sendWs({ action: 'control', play_mode }),
-    nudgeRobot: () => postJson('/api/nudge'),
+    nudgeRobot: (dir = 'random') => postJson('/api/nudge', { dir }),
     saveModel: () => postJson('/api/models/save'),
     loadModel: () => postJson('/api/models/load'),
     resetModel: () => postJson('/api/models/reset'),

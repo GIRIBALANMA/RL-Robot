@@ -40,8 +40,14 @@ def create_app() -> web.Application:
         res = await manager.apply_control(body)
         return web.json_response(res)
 
-    async def nudge_handler(_req: web.Request) -> web.Response:
-        res = await manager.nudge()
+    async def nudge_handler(req: web.Request) -> web.Response:
+        direction = "random"
+        try:
+            body = await req.json()
+            direction = str(body.get("dir", "random"))
+        except Exception:
+            pass
+        res = await manager.nudge(direction)
         return web.json_response(res)
 
     async def save_handler(_req: web.Request) -> web.Response:

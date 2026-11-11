@@ -26,7 +26,7 @@ export function createLearningHud({ liveClient, onModeChange }) {
   const valSteps = document.getElementById('val-steps');
 
   const btnPause = document.getElementById('btn-pause');
-  const btnNudge = document.getElementById('btn-nudge');
+  const nudgeBtns = [...document.querySelectorAll('[data-nudge]')];
   const speedBtns = [...document.querySelectorAll('[data-speed]')];
   const stageBtns = [...document.querySelectorAll('[data-stage]')];
   const policyBtns = [...document.querySelectorAll('[data-policy]')];
@@ -72,8 +72,10 @@ export function createLearningHud({ liveClient, onModeChange }) {
     liveClient.setPaused(currentPaused);
   });
 
-  btnNudge.addEventListener('click', () => {
-    liveClient.nudgeRobot().catch(() => {});
+  nudgeBtns.forEach((btn) => {
+    btn.addEventListener('click', () => {
+      liveClient.nudgeRobot(btn.dataset.nudge).catch(() => {});
+    });
   });
 
   speedBtns.forEach((btn) => {
@@ -258,3 +260,4 @@ export function createLearningHud({ liveClient, onModeChange }) {
     updateConnection,
   };
 }
+

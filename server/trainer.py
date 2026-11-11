@@ -267,13 +267,21 @@ class LearningManager:
         await self._broadcast(self._stats_snapshot())
         return self._stats_snapshot()
 
-    async def nudge(self) -> dict:
+    async def nudge(self, direction: str = "random") -> dict:
+        impulses = {
+            "front": (-1.20, 0.0, "Front push — stepping/bending knee back to balance!"),
+            "back": (1.20, 0.0, "Back push — stepping/bending knee forward to catch balance!"),
+            "left": (0.0, -0.95, "Left push — abducting hip & leg out to balance!"),
+            "right": (0.0, 0.95, "Right push — abducting hip & leg out to balance!"),
+            "random": (1.05, 0.80, "Applied lateral/forward nudge impulse!"),
+        }
+        dvx, dvz, note = impulses.get(direction, impulses["random"])
         async with self._lock:
-            self.env.apply_impulse(dvx=1.4, dvz=0.9, env_idx=0)
+            self.env.apply_impulse(dvx=dvx, dvz=dvz, env_idx=0)
             self._s_obs.copy_(self.env.get_obs())
-            self.last_milestone = "Applied lateral/forward nudge impulse!"
+            self.last_milestone = note
         await self._broadcast(self._stats_snapshot())
-        return {"ok": True}
+        return {"ok": True, "dir": direction}
 
     def start(self) -> None:
         if self._task is None or self._task.done():

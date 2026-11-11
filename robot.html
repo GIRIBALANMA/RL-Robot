@@ -61,10 +61,7 @@
         <aside class="card control-card" aria-label="Trainer and model persistence">
           <div class="card-head">
             <h2>Training Pace</h2>
-            <div class="btn-pair">
-              <button type="button" id="btn-pause" class="btn-acc" aria-pressed="false">Pause</button>
-              <button type="button" id="btn-nudge" class="btn-ghost" title="Apply lateral push impulse">Nudge</button>
-            </div>
+            <button type="button" id="btn-pause" class="btn-acc" aria-pressed="false">Pause</button>
           </div>
 
           <div class="ctrl-group">
@@ -91,6 +88,16 @@
             <div class="pill-row">
               <button type="button" data-policy="train" aria-pressed="true">Train (PPO)</button>
               <button type="button" data-policy="eval" aria-pressed="false">Eval Only</button>
+            </div>
+          </div>
+
+          <div class="ctrl-group">
+            <span class="ctrl-label">Push Recovery Test</span>
+            <div class="pill-row" role="group" aria-label="Directional push impulse">
+              <button type="button" data-nudge="front" title="Push forward (+x): bend knee and brace">Front</button>
+              <button type="button" data-nudge="back" title="Push backward (-x): step/bend knee to catch balance">Back</button>
+              <button type="button" data-nudge="left" title="Push left (-z): abduct opposite hip to brace">Left</button>
+              <button type="button" data-nudge="right" title="Push right (+z): abduct opposite hip to brace">Right</button>
             </div>
           </div>
 
