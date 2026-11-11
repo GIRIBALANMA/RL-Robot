@@ -109,7 +109,13 @@ export function createLearningHud({ liveClient, onModeChange }) {
     btnSave.disabled = true;
     try {
       const res = await liveClient.saveModel(activeRobotMode);
-      if (res?.model) renderModelInfo(res.model, activeRobotMode);
+      if (res?.ok && res?.model) {
+        renderModelInfo(res.model, activeRobotMode);
+      } else {
+        milestoneEl.textContent = res?.error || `Failed to save ${activeRobotMode} model locally.`;
+      }
+    } catch (err) {
+      milestoneEl.textContent = `Save failed: ${err?.message || 'network error'}`;
     } finally {
       btnSave.disabled = false;
     }
@@ -119,7 +125,13 @@ export function createLearningHud({ liveClient, onModeChange }) {
     btnLoad.disabled = true;
     try {
       const res = await liveClient.loadModel(activeRobotMode);
-      if (res?.model) renderModelInfo(res.model, activeRobotMode);
+      if (res?.ok && res?.model) {
+        renderModelInfo(res.model, activeRobotMode);
+      } else {
+        milestoneEl.textContent = res?.error || `No saved ${activeRobotMode} model available locally.`;
+      }
+    } catch (err) {
+      milestoneEl.textContent = `Load failed: ${err?.message || 'network error'}`;
     } finally {
       btnLoad.disabled = false;
     }
@@ -146,8 +158,9 @@ export function createLearningHud({ liveClient, onModeChange }) {
     }
     const ptKb = Math.round((info.pt_bytes || 0) / 1024);
     const onnxKb = Math.round((info.onnx_bytes || 0) / 1024);
+    const srcTag = info.source === 'best' ? ` · Best (${info.loaded_file || info.pt_file})` : '';
     modelMetaEl.innerHTML =
-      `<strong>${info.pt_file}</strong> (${ptKb} KB)` +
+      `<strong>${info.pt_file}</strong> (${ptKb} KB)${srcTag}` +
       (info.onnx_file ? ` · <strong>${info.onnx_file}</strong> (${onnxKb} KB)` : '') +
       `<br>Ep ${info.episode ?? 0} · Best dist ${info.best_distance ?? 0}u · ${info.saved_at ?? ''}`;
     dlPt.href = `/api/models/download/${encodeURIComponent(info.pt_file)}`;

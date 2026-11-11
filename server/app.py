@@ -63,8 +63,7 @@ def create_app() -> web.Application:
 
     async def save_handler(req: web.Request) -> web.Response:
         mode = await _opt_mode(req)
-        meta = manager.save_now(mode=mode, export_onnx=True)
-        await manager._broadcast(manager._stats_snapshot())
+        meta = await manager.save_saved(mode=mode, export_onnx=True)
         return web.json_response({"ok": True, "model": meta})
 
     async def load_handler(req: web.Request) -> web.Response:

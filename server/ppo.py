@@ -5,13 +5,35 @@ from __future__ import annotations
 import copy
 import json
 import math
-import shutil
+import os
 import time
 from pathlib import Path
 
 import torch
 import torch.nn as nn
 from torch.distributions import Normal
+
+
+def _atomic_torch_save(payload: dict, target: Path) -> None:
+    """Atomically write a PyTorch checkpoint via a same-directory temporary file."""
+    tmp = target.with_name(f"{target.stem}.{os.getpid()}.tmp{target.suffix}")
+    try:
+        torch.save(payload, tmp)
+        os.replace(tmp, target)
+    except Exception:
+        tmp.unlink(missing_ok=True)
+        raise
+
+
+def _atomic_write_text(text: str, target: Path) -> None:
+    """Atomically write UTF-8 text via a same-directory temporary file."""
+    tmp = target.with_name(f"{target.stem}.{os.getpid()}.tmp{target.suffix}")
+    try:
+        tmp.write_text(text, encoding="utf-8")
+        os.replace(tmp, target)
+    except Exception:
+        tmp.unlink(missing_ok=True)
+        raise
 
 
 class RunningNorm(nn.Module):
@@ -189,17 +211,32 @@ class PPOTrainer:
             round(max(best_rew, 0.0), 2),
         )
 
+    def _candidate_pt_paths(self, prefer_best: bool) -> list[Path]:
+        """Return unique local checkpoint paths for this isolated mode."""
+        ordered = [self.best_pt_path, self.pt_path] if prefer_best else [self.pt_path, self.best_pt_path]
+        if prefer_best:
+            ordered.extend(
+                p for p in sorted(self.models_dir.glob(f"{self.model_name}*.pt"))
+                if ".tmp" not in p.stem
+            )
+        seen: set[Path] = set()
+        paths: list[Path] = []
+        for path in ordered:
+            if path not in seen and path.exists():
+                seen.add(path)
+                paths.append(path)
+        return paths
+
     def _read_best_score(self) -> tuple[float, float, float]:
         best = (-1.0, -1e9, -1.0)
-        for path in (self.best_pt_path, self.pt_path):
-            if path.exists():
-                try:
-                    p = torch.load(path, map_location="cpu", weights_only=False)
-                    s = self._score_stats(p.get("stats", {}))
-                    if s > best:
-                        best = s
-                except Exception:
-                    pass
+        for path in self._candidate_pt_paths(prefer_best=True):
+            try:
+                p = torch.load(path, map_location="cpu", weights_only=False)
+                s = self._score_stats(p.get("stats", {}))
+                if s > best:
+                    best = s
+            except Exception:
+                pass
         return best
 
     def update(
@@ -284,14 +321,17 @@ class PPOTrainer:
         }
 
     def _build_meta(self, stats: dict, saved_at: str, onnx_ok: bool, source: str = "latest") -> dict:
+        has_onnx = self.onnx_path.exists()
         return {
             "model_name": self.model_name,
             "pt_file": self.pt_path.name,
+            "loaded_file": str(stats.get("_loaded_file", self.pt_path.name)),
             "pt_bytes": self.pt_path.stat().st_size if self.pt_path.exists() else 0,
-            "onnx_file": self.onnx_path.name if onnx_ok else None,
-            "onnx_bytes": self.onnx_path.stat().st_size if onnx_ok and self.onnx_path.exists() else 0,
+            "onnx_file": self.onnx_path.name if has_onnx else None,
+            "onnx_bytes": self.onnx_path.stat().st_size if has_onnx else 0,
             "saved_at": saved_at,
             "episode": stats.get("episode", 0),
+            "updates": stats.get("updates", 0),
             "total_steps": stats.get("total_steps", 0),
             "stage": stats.get("stage", 0),
             "avg_reward": round(float(stats.get("avg_reward", 0.0)), 2),
@@ -303,65 +343,71 @@ class PPOTrainer:
             "device": str(self.device),
         }
 
+    def _export_onnx_atomic(self) -> bool:
+        """Export current policy + observation normalizer to ONNX atomically."""
+        tmp = self.onnx_path.with_name(f"{self.onnx_path.stem}.{os.getpid()}.tmp.onnx")
+        try:
+            cpu_model = copy.deepcopy(self.model).eval().to("cpu")
+            wrapper = PolicyInferenceWrapper(cpu_model)
+            dummy = torch.zeros(1, self.obs_dim, dtype=torch.float32)
+            torch.onnx.export(
+                wrapper,
+                dummy,
+                str(tmp),
+                input_names=["obs"],
+                output_names=["joint_targets"],
+                opset_version=14,
+                dynamo=False,
+            )
+            os.replace(tmp, self.onnx_path)
+            return True
+        except Exception:
+            tmp.unlink(missing_ok=True)
+            return False
+
     def save(self, stats: dict, export_onnx: bool = True, allow_best: bool = True) -> dict:
         """Save isolated PyTorch .pt checkpoint, protected best .pt snapshot, and ONNX graph to models/."""
-        stats = dict(stats)
-        stats["arch"] = "mujoco_pure_v1"
-        stats["model_name"] = self.model_name
+        clean_stats = {k: v for k, v in stats.items() if not str(k).startswith("_")}
+        clean_stats["arch"] = "mujoco_pure_v1"
+        clean_stats["model_name"] = self.model_name
         cpu_state = {k: v.detach().cpu() for k, v in self.model.state_dict().items()}
         payload = {
             "model_state": cpu_state,
             "optimizer_state": self.optimizer.state_dict(),
-            "stats": stats,
+            "stats": clean_stats,
             "saved_at": time.strftime("%Y-%m-%d %H:%M:%S"),
         }
-        torch.save(payload, self.pt_path)
+        _atomic_torch_save(payload, self.pt_path)
 
-        score = self._score_stats(stats)
-        if not self.best_pt_path.exists() or (allow_best and score >= self._best_score):
-            torch.save(payload, self.best_pt_path)
-            if score > self._best_score:
-                self._best_score = score
+        score = self._score_stats(clean_stats)
+        if not self.best_pt_path.exists():
+            _atomic_torch_save(payload, self.best_pt_path)
+            self._best_score = max(self._best_score, score)
+        elif allow_best and score >= self._best_score:
+            _atomic_torch_save(payload, self.best_pt_path)
+            self._best_score = score
 
-        onnx_ok = False
-        if export_onnx:
-            try:
-                cpu_model = copy.deepcopy(self.model).eval().to("cpu")
-                wrapper = PolicyInferenceWrapper(cpu_model)
-                dummy = torch.zeros(1, self.obs_dim, dtype=torch.float32)
-                torch.onnx.export(
-                    wrapper,
-                    dummy,
-                    str(self.onnx_path),
-                    input_names=["obs"],
-                    output_names=["joint_targets"],
-                    opset_version=14,
-                    dynamo=False,
-                )
-                onnx_ok = True
-            except Exception:
-                onnx_ok = False
-
-        meta = self._build_meta(stats, payload["saved_at"], onnx_ok)
-        self.meta_path.write_text(json.dumps(meta, indent=2), encoding="utf-8")
+        onnx_ok = self._export_onnx_atomic() if export_onnx else self.onnx_path.exists()
+        meta = self._build_meta(clean_stats, payload["saved_at"], onnx_ok)
+        _atomic_write_text(json.dumps(meta, indent=2), self.meta_path)
         return meta
 
     def load(self, prefer_best: bool = False) -> dict | None:
-        """Load saved PyTorch .pt checkpoint, choosing the highest-scoring best snapshot when requested."""
+        """Load saved PyTorch .pt checkpoint, choosing the highest-scoring best snapshot locally when requested."""
         candidates = []
-        paths = (self.best_pt_path, self.pt_path) if prefer_best else (self.pt_path, self.best_pt_path)
-        for path in paths:
-            if not path.exists():
-                continue
+        for path in self._candidate_pt_paths(prefer_best=prefer_best):
             try:
                 payload = torch.load(path, map_location=self.device, weights_only=False)
-                stats = payload.get("stats", {})
-                if stats.get("arch") != "mujoco_pure_v1":
+                raw_stats = payload.get("stats", {})
+                if raw_stats.get("arch") != "mujoco_pure_v1":
                     continue
-                saved_mode = stats.get("model_name")
+                saved_mode = raw_stats.get("model_name")
                 if saved_mode is not None and saved_mode != self.model_name:
                     continue
-                candidates.append((self._score_stats(stats), path, payload))
+                score = self._score_stats(raw_stats)
+                is_best_file = 1 if path == self.best_pt_path else 0
+                updates = int(raw_stats.get("updates", 0))
+                candidates.append((score, is_best_file, updates, path, payload))
             except Exception:
                 continue
 
@@ -369,31 +415,39 @@ class PPOTrainer:
             return None
 
         if prefer_best:
-            candidates.sort(key=lambda item: item[0], reverse=True)
-        _, chosen_path, payload = candidates[0]
+            candidates.sort(key=lambda item: (item[0], item[1], item[2]), reverse=True)
+        chosen_score, _, _, chosen_path, payload = candidates[0]
 
         self.model.load_state_dict(payload["model_state"])
         if "optimizer_state" in payload:
             self.optimizer.load_state_dict(payload["optimizer_state"])
         stats = dict(payload.get("stats", {}))
         self.update_count = int(stats.get("updates", 0))
-        stats["_loaded_source"] = "best" if chosen_path == self.best_pt_path else "latest"
 
-        # Promote legacy checkpoint into best_pt_path on first run so Resets cannot lose it
-        if not self.best_pt_path.exists():
-            torch.save(payload, self.best_pt_path)
-            self._best_score = self._score_stats(stats)
+        best_file_score = next(
+            (item[0] for item in candidates if item[3] == self.best_pt_path),
+            (-1.0, -1e9, -1.0),
+        )
+        if not self.best_pt_path.exists() or chosen_score > best_file_score:
+            _atomic_torch_save(payload, self.best_pt_path)
+            best_file_score = chosen_score
+        self._best_score = max(self._best_score, best_file_score, chosen_score)
+
+        is_best_choice = chosen_path == self.best_pt_path or (prefer_best and chosen_score >= self._best_score)
+        stats["_loaded_file"] = chosen_path.name
+        stats["_loaded_source"] = "best" if is_best_choice else "latest"
 
         if prefer_best:
-            if chosen_path == self.best_pt_path:
-                shutil.copy2(chosen_path, self.pt_path)
+            if chosen_path != self.pt_path:
+                _atomic_torch_save(payload, self.pt_path)
+            onnx_ok = self.onnx_path.exists() or self._export_onnx_atomic()
             meta = self._build_meta(
                 stats,
                 payload.get("saved_at", time.strftime("%Y-%m-%d %H:%M:%S")),
-                self.onnx_path.exists(),
+                onnx_ok,
                 source=stats["_loaded_source"],
             )
-            self.meta_path.write_text(json.dumps(meta, indent=2), encoding="utf-8")
+            _atomic_write_text(json.dumps(meta, indent=2), self.meta_path)
         return stats
 
     def reset_weights(self) -> None:

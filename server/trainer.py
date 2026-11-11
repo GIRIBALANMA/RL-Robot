@@ -183,6 +183,7 @@ class LearningManager:
         ms["avg_upright"] = float(loaded.get("avg_upright", 0.90 if ms["episode"] > 500 else 0.0))
         ms["avg_length"] = float(loaded.get("avg_length", 350.0 if ms["episode"] > 500 else 0.0))
         ms["avg_distance"] = float(loaded.get("avg_distance", 0.0))
+        ms["last_losses"] = {"policy_loss": 0.0, "value_loss": 0.0, "entropy": 0.0}
         ms["history"].clear()
         if ms["updates"] > 0:
             ms["history"].append(
@@ -214,7 +215,15 @@ class LearningManager:
         }
         meta = self.trainers[target].save(stats, export_onnx=export_onnx, allow_best=allow_best)
         ms["last_save_time"] = time.time()
-        ms["last_milestone"] = f"Saved {target}_ppo.pt (Ep {ms['episode']}, {meta['pt_bytes'] // 1024} KB)"
+        ms["last_milestone"] = f"Saved {target}_ppo.pt locally (Ep {ms['episode']}, {meta['pt_bytes'] // 1024} KB)"
+        return meta
+
+    async def save_saved(self, mode: str | None = None, export_onnx: bool = True) -> dict:
+        """Persist the isolated mode model locally under the trainer lock and broadcast status."""
+        target = self._resolve_mode(mode)
+        async with self._lock:
+            meta = self.save_now(mode=target, export_onnx=export_onnx, allow_best=True)
+        await self._broadcast(self._stats_snapshot())
         return meta
 
     async def load_saved(self, mode: str | None = None) -> dict | None:
@@ -232,9 +241,10 @@ class LearningManager:
                 self._s_obs.copy_(self.env.get_obs())
                 self._rollout_reset_req = True
             ms["last_save_time"] = time.time()
-            src_label = "best saved model" if loaded.get("_loaded_source") == "best" else "saved model"
+            loaded_file = loaded.get("_loaded_file", f"{target}_best.pt")
+            src_label = f"best local ({loaded_file})" if loaded.get("_loaded_source") == "best" else f"local ({loaded_file})"
             label = "Walk" if target == "walk" else "Stand"
-            ms["last_milestone"] = f"Restored {label} {src_label} (Ep {ms['episode']} · {ms['avg_upright']:.0%})"
+            ms["last_milestone"] = f"Loaded {label} {src_label} (Ep {ms['episode']} · {ms['avg_upright']:.0%})"
         await self._broadcast(self._stats_snapshot())
         return self.trainers[target].get_model_info()
 
