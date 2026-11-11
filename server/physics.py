@@ -112,6 +112,12 @@ class BipedPhysicsEnv:
         self.body_inertia = torch.tensor([1.25, 0.60, 1.40], device=self.device)
         self.com_local = torch.tensor([0.0, 0.95, 0.0], device=self.device)
         self.body_radii = torch.tensor([0.22, 0.22, 0.34, 0.45, 0.42], device=self.device).view(1, 5)
+        self.hip_local_buf = torch.tensor(
+            [[0.3, -0.15, 0.0], [-0.3, -0.15, 0.0]], device=self.device
+        ).unsqueeze(0).expand(num_envs, 2, 3).contiguous()
+        self.chest_local = torch.tensor([[0.0, 1.35, 0.0]], device=self.device)
+        self.head_local = torch.tensor([[0.0, 2.35, 0.0]], device=self.device)
+        self.arm_rest_vec = torch.tensor([[0.0, -2.2, 0.0]], device=self.device)
 
         # Foot corner offsets in foot frame: [4, 3] (heel/toe x inner/outer)
         self.foot_corners = torch.tensor(
@@ -125,6 +131,7 @@ class BipedPhysicsEnv:
         )
 
         self.stage = 0  # 0 = stand/balance, 1 = walk
+        self.stage_t = torch.zeros(1, device=self.device)
         self.target_speed = 2.6
 
         # State tensors
@@ -145,10 +152,29 @@ class BipedPhysicsEnv:
         self.ep_upright = torch.zeros(n, device=self.device)
         self.start_x = torch.zeros(n, device=self.device)
 
+        # GPU-resident accumulators & hero snapshot vector (eliminates per-step CPU syncs)
+        self.ep_count_acc = torch.zeros(1, device=self.device)
+        self.ep_rew_acc = torch.zeros(1, device=self.device)
+        self.ep_up_acc = torch.zeros(1, device=self.device)
+        self.ep_len_acc = torch.zeros(1, device=self.device)
+        self.ep_dist_acc = torch.zeros(1, device=self.device)
+        self.best_rew_t = torch.full((1,), -1e9, device=self.device)
+        self.best_dist_t = torch.zeros(1, device=self.device)
+        self.hero_vec = torch.zeros(25, device=self.device)
+
+        # Precompute exact nominal standing height so feet rest cleanly on road on branchless resets
+        self.pos[:, 1] = 2.70
+        self.eul[:, 1] = math.pi / 2.0
+        self.q.copy_(self.j_nom.unsqueeze(0).expand(n, -1))
+        _, _, _, _, _, _, p_corners, _, _ = self._compute_fk()
+        min_foot_y = float(p_corners[0, ..., 1].min().item())
+        self.nom_spawn_y = 2.70 + (ROAD_TOP_Y + 0.004) - min_foot_y
+
         self.reset()
 
     def set_stage(self, stage: int) -> None:
         self.stage = 1 if stage >= 1 else 0
+        self.stage_t.fill_(float(self.stage))
 
     def apply_impulse(self, dvx: float = 0.0, dvz: float = 0.0, env_idx: int = 0) -> None:
         """Apply a physical external push impulse to test balance recovery."""
@@ -157,46 +183,67 @@ class BipedPhysicsEnv:
         self.ang_vel[env_idx, 0] += dvx * 0.4
         self.ang_vel[env_idx, 2] -= dvz * 0.4
 
+    def _reset_masked(self, done: torch.Tensor) -> None:
+        """Branchless pure-GPU masked reset (zero CPU-GPU syncs, CUDA-Graph safe)."""
+        n = self.num_envs
+        m1 = done.unsqueeze(-1)
+        rand_pos = torch.stack(
+            [
+                torch.zeros(n, device=self.device),
+                self.nom_spawn_y + (torch.rand(n, device=self.device) - 0.5) * 0.02,
+                (torch.rand(n, device=self.device) - 0.5) * 0.35,
+            ],
+            dim=-1,
+        )
+        rand_vel = torch.stack(
+            [
+                (torch.rand(n, device=self.device) - 0.5) * 0.22,
+                torch.zeros(n, device=self.device),
+                (torch.rand(n, device=self.device) - 0.5) * 0.22,
+            ],
+            dim=-1,
+        )
+        rand_eul = torch.stack(
+            [
+                (torch.rand(n, device=self.device) - 0.5) * 0.12,
+                math.pi / 2.0 + (torch.rand(n, device=self.device) - 0.5) * 0.10,
+                (torch.rand(n, device=self.device) - 0.5) * 0.12,
+            ],
+            dim=-1,
+        )
+        rand_ang = (torch.rand(n, 3, device=self.device) - 0.5) * 0.30
+        q0 = torch.clamp(
+            self.j_nom.unsqueeze(0) + (torch.rand(n, self.ACT_DIM, device=self.device) - 0.5) * 0.06,
+            self.j_min,
+            self.j_max,
+        )
+
+        self.pos.copy_(torch.where(m1, rand_pos, self.pos))
+        self.vel.copy_(torch.where(m1, rand_vel, self.vel))
+        self.eul.copy_(torch.where(m1, rand_eul, self.eul))
+        self.ang_vel.copy_(torch.where(m1, rand_ang, self.ang_vel))
+        self.q.copy_(torch.where(m1, q0, self.q))
+        self.q_cmd.copy_(torch.where(m1, q0, self.q_cmd))
+        self.qd.copy_(torch.where(m1, torch.zeros_like(self.qd), self.qd))
+        self.prev_act.copy_(torch.where(m1, torch.zeros_like(self.prev_act), self.prev_act))
+        self.step_count.copy_(torch.where(done, torch.zeros_like(self.step_count), self.step_count))
+        self.gait_phase.copy_(
+            torch.where(done, torch.rand(n, device=self.device) * (2.0 * math.pi), self.gait_phase)
+        )
+        self.ep_reward.copy_(torch.where(done, torch.zeros_like(self.ep_reward), self.ep_reward))
+        self.ep_upright.copy_(torch.where(done, torch.zeros_like(self.ep_upright), self.ep_upright))
+        self.start_x.copy_(torch.where(done, rand_pos[:, 0], self.start_x))
+
     def reset(self, env_ids: torch.Tensor | None = None) -> torch.Tensor:
         if env_ids is None:
-            env_ids = torch.arange(self.num_envs, device=self.device)
-        k = env_ids.numel()
-        if k == 0:
-            return self.get_obs()
-
-        # Spawn upright near road center facing +x (yaw = pi/2), slight perturbation
-        self.pos[env_ids, 0] = 0.0
-        self.pos[env_ids, 1] = 2.68 + (torch.rand(k, device=self.device) - 0.5) * 0.05
-        self.pos[env_ids, 2] = (torch.rand(k, device=self.device) - 0.5) * 0.4
-        self.start_x[env_ids] = self.pos[env_ids, 0]
-
-        self.vel[env_ids, 0] = (torch.rand(k, device=self.device) - 0.5) * 0.25
-        self.vel[env_ids, 1] = 0.0
-        self.vel[env_ids, 2] = (torch.rand(k, device=self.device) - 0.5) * 0.25
-
-        self.eul[env_ids, 0] = (torch.rand(k, device=self.device) - 0.5) * 0.14  # pitch
-        self.eul[env_ids, 1] = math.pi / 2.0 + (torch.rand(k, device=self.device) - 0.5) * 0.12  # yaw
-        self.eul[env_ids, 2] = (torch.rand(k, device=self.device) - 0.5) * 0.14  # roll
-
-        self.ang_vel[env_ids] = (torch.rand(k, 3, device=self.device) - 0.5) * 0.35
-
-        # Neutral slightly-bent athletic stance with slight noise
-        q0 = self.j_nom.unsqueeze(0).expand(k, -1).clone()
-        q0 += (torch.rand(k, self.ACT_DIM, device=self.device) - 0.5) * 0.08
-        self.q[env_ids] = torch.clamp(q0, self.j_min, self.j_max)
-        self.q_cmd[env_ids] = self.q[env_ids]
-        self.qd[env_ids] = 0.0
-        self.prev_act[env_ids] = 0.0
-        self.step_count[env_ids] = 0
-        self.gait_phase[env_ids] = torch.rand(k, device=self.device) * 2.0 * math.pi
-        self.ep_reward[env_ids] = 0.0
-        self.ep_upright[env_ids] = 0.0
-
-        # Place feet cleanly onto the road surface with zero initial penetration spike
-        _, _, _, _, _, _, p_corners, _, _ = self._compute_fk()
-        min_foot_y = p_corners[env_ids, ..., 1].amin(dim=(1, 2))
-        self.pos[env_ids, 1] += (ROAD_TOP_Y + 0.004) - min_foot_y
+            done = torch.ones(self.num_envs, dtype=torch.bool, device=self.device)
+        else:
+            done = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
+            if env_ids.numel() > 0:
+                done[env_ids] = True
+        self._reset_masked(done)
         self._update_foot_metrics()
+        self._write_hero_vec()
         return self.get_obs()
 
     def _compute_fk(self):
@@ -204,13 +251,8 @@ class BipedPhysicsEnv:
         R_root = _rot_yxz(self.eul[:, 0], self.eul[:, 1], self.eul[:, 2])  # [N, 3, 3]
         axis_x_local = R_root[:, :, 0]  # [N, 3] world direction of robot's local X axis
 
-        n = self.num_envs
         # Build both legs simultaneously [N, 2, ...] (0=Right s=+1, 1=Left s=-1)
-        hip_x_off = torch.tensor([0.3, -0.3], device=self.device).view(1, 2, 1)
-        hip_local = torch.zeros(n, 2, 3, device=self.device)
-        hip_local[:, :, 0] = hip_x_off.squeeze(-1)
-        hip_local[:, :, 1] = -0.15
-        p_hip = self.pos.unsqueeze(1) + torch.einsum("nij,nlj->nli", R_root, hip_local)
+        p_hip = self.pos.unsqueeze(1) + torch.einsum("nij,nlj->nli", R_root, self.hip_local_buf)
 
         # Signed sagittal angles (model.js convention: rot_x = val * sign)
         a_hip = torch.stack([self.q[:, 9] * -1.0, self.q[:, 11] * -1.0], dim=1)
@@ -240,10 +282,8 @@ class BipedPhysicsEnv:
         p_corners = p_ankle.unsqueeze(2) + torch.einsum("nij,nlcj->nlci", R_root, corners_local)
 
         # Body collision points in world (chest, head)
-        chest_local = torch.tensor([0.0, 1.35, 0.0], device=self.device).view(1, 3)
-        head_local = torch.tensor([0.0, 2.35, 0.0], device=self.device).view(1, 3)
-        p_chest = self.pos + torch.einsum("nij,nj->ni", R_root, chest_local)
-        p_head = self.pos + torch.einsum("nij,nj->ni", R_root, head_local)
+        p_chest = self.pos + torch.einsum("nij,nj->ni", R_root, self.chest_local)
+        p_head = self.pos + torch.einsum("nij,nj->ni", R_root, self.head_local)
 
         # Include arm mass COM shift so raising/swinging arms physically shifts balance
         rs, rr = self.q[:, 3], self.q[:, 4]
@@ -252,7 +292,7 @@ class BipedPhysicsEnv:
         ay_l = -1.1 * torch.cos(lr)
         arm_r_off = torch.stack([1.1 * torch.sin(rr), ay_r * torch.cos(rs), -ay_r * torch.sin(rs)], dim=-1)
         arm_l_off = torch.stack([-1.1 * torch.sin(lr), ay_l * torch.cos(ls), -ay_l * torch.sin(ls)], dim=-1)
-        arm_com_shift = 0.10 * ((arm_r_off + arm_l_off) - torch.tensor([0.0, -2.2, 0.0], device=self.device))
+        arm_com_shift = 0.10 * ((arm_r_off + arm_l_off) - self.arm_rest_vec)
         p_com = self.pos + torch.einsum("nij,nj->ni", R_root, self.com_local.unsqueeze(0) + arm_com_shift)
 
         return R_root, axis_x_local, p_com, p_hip, p_knee, p_ankle, p_corners, p_chest, p_head
@@ -264,7 +304,12 @@ class BipedPhysicsEnv:
         self.foot_contact = (min_y <= ROAD_TOP_Y + 0.02).float()
 
     def step(self, action: torch.Tensor, dt_ctrl: float = 1.0 / 45.0, substeps: int = 4):
-        """Advance physics and return (obs, reward, done, info)."""
+        """Compatibility step returning (obs, reward, done, info_list)."""
+        obs, rew, done = self._step_core(action, dt_ctrl, substeps)
+        return obs, rew, done, []
+
+    def _step_core(self, action: torch.Tensor, dt_ctrl: float = 1.0 / 45.0, substeps: int = 4):
+        """Advance physics purely in GPU tensors without CPU synchronization."""
         action = torch.clamp(action, -1.0, 1.0)
         q_target_raw = torch.clamp(self.j_nom + action * self.act_scale, self.j_min, self.j_max)
         self.q_cmd = self.q_cmd + 0.45 * (q_target_raw - self.q_cmd)
@@ -432,61 +477,57 @@ class BipedPhysicsEnv:
         )
         elbow_natural = torch.exp(-2.5 * ((self.q[:, 5] - 0.32) ** 2 + (self.q[:, 8] - 0.32) ** 2))
 
-        if self.stage == 0:
-            # Stage 0: Stand straight like a human using subtle ankle + arm balance, not torso lean/twist
-            still_bonus = torch.exp(-0.8 * (self.vel[:, 0] ** 2 + self.vel[:, 2] ** 2))
-            waist_straight = torch.exp(-8.0 * (self.q[:, 2] ** 2))
-            arm_pitch_calm = torch.exp(-2.0 * ((self.q[:, 3] + 1.4 * pitch) ** 2 + (self.q[:, 6] + 1.4 * pitch) ** 2))
-            reward = (
-                0.45
-                + 1.5 * upright
-                + 1.2 * height_ok
-                + 0.4 * both_feet
-                + 0.35 * still_bonus
-                + 0.35 * waist_straight
-                + 0.45 * arm_balance_pose
-                + 0.30 * arm_pitch_calm
-                + 0.20 * elbow_natural
-                + 0.20 * ang_calm
-                - torso_straight_pen
-                - energy_pen
-            )
-        else:
-            # Stage 1: Human walk with tall straight torso and natural opposite arm swing
-            vx = self.vel[:, 0]
-            vz = self.vel[:, 2]
-            vel_match = torch.exp(-1.1 * (vx - self.target_speed) ** 2)
-            fwd_progress = torch.clamp(vx, -1.0, 3.6) * 0.65
-            heading = torch.exp(-3.5 * yaw_err * yaw_err - 0.9 * vz * vz)
+        # Blend Stand vs Walk reward purely via GPU scalar so CUDA Graph never branches
+        still_bonus = torch.exp(-0.8 * (self.vel[:, 0] ** 2 + self.vel[:, 2] ** 2))
+        waist_straight = torch.exp(-8.0 * (self.q[:, 2] ** 2))
+        arm_pitch_calm = torch.exp(-2.0 * ((self.q[:, 3] + 1.4 * pitch) ** 2 + (self.q[:, 6] + 1.4 * pitch) ** 2))
+        rew_stand = (
+            0.45
+            + 1.5 * upright
+            + 1.2 * height_ok
+            + 0.4 * both_feet
+            + 0.35 * still_bonus
+            + 0.35 * waist_straight
+            + 0.45 * arm_balance_pose
+            + 0.30 * arm_pitch_calm
+            + 0.20 * elbow_natural
+            + 0.20 * ang_calm
+            - torso_straight_pen
+            - energy_pen
+        )
 
-            # Proper human opposite hand swing: right arm counters right hip, left arm counters left hip
-            arm_counter_err = (self.q[:, 3] + 0.85 * self.q[:, 9]) ** 2 + (self.q[:, 6] + 0.85 * self.q[:, 11]) ** 2
-            arm_swing_reward = 0.75 * torch.exp(-3.5 * arm_counter_err)
-            # Subtle natural waist counter-twist matching stride instead of hunched torso
-            waist_natural = 0.25 * torch.exp(-6.0 * (self.q[:, 2] - 0.14 * (self.q[:, 11] - self.q[:, 9])) ** 2)
+        vx = self.vel[:, 0]
+        vz = self.vel[:, 2]
+        vel_match = torch.exp(-1.1 * (vx - self.target_speed) ** 2)
+        fwd_progress = torch.clamp(vx, -1.0, 3.6) * 0.65
+        heading = torch.exp(-3.5 * yaw_err * yaw_err - 0.9 * vz * vz)
+        arm_counter_err = (self.q[:, 3] + 0.85 * self.q[:, 9]) ** 2 + (self.q[:, 6] + 0.85 * self.q[:, 11]) ** 2
+        arm_swing_reward = 0.75 * torch.exp(-3.5 * arm_counter_err)
+        waist_natural = 0.25 * torch.exp(-6.0 * (self.q[:, 2] - 0.14 * (self.q[:, 11] - self.q[:, 9])) ** 2)
+        s_phase = torch.sin(self.gait_phase)
+        stride_sep = torch.clamp(torch.abs(self.q[:, 9] - self.q[:, 11]), 0.0, 0.9)
+        swing_lift = torch.clamp(torch.abs(self.foot_heights[:, 0] - self.foot_heights[:, 1]), 0.0, 0.35)
+        gait_guide = 0.35 * stride_sep + 0.75 * swing_lift + 0.15 * s_phase * (self.q[:, 9] - self.q[:, 11])
+        rew_walk = (
+            0.35
+            + 1.5 * vel_match
+            + fwd_progress
+            + 1.25 * upright
+            + 0.85 * height_ok
+            + 0.45 * heading
+            + 0.25 * any_foot
+            + arm_swing_reward
+            + 0.30 * arm_balance_pose
+            + 0.25 * elbow_natural
+            + waist_natural
+            + gait_guide
+            + 0.15 * ang_calm
+            - 0.8 * torso_straight_pen
+            - energy_pen
+        )
 
-            s_phase = torch.sin(self.gait_phase)
-            stride_sep = torch.clamp(torch.abs(self.q[:, 9] - self.q[:, 11]), 0.0, 0.9)
-            swing_lift = torch.clamp(torch.abs(self.foot_heights[:, 0] - self.foot_heights[:, 1]), 0.0, 0.35)
-            gait_guide = 0.35 * stride_sep + 0.75 * swing_lift + 0.15 * s_phase * (self.q[:, 9] - self.q[:, 11])
-
-            reward = (
-                0.35
-                + 1.5 * vel_match
-                + fwd_progress
-                + 1.25 * upright
-                + 0.85 * height_ok
-                + 0.45 * heading
-                + 0.25 * any_foot
-                + arm_swing_reward
-                + 0.30 * arm_balance_pose
-                + 0.25 * elbow_natural
-                + waist_natural
-                + gait_guide
-                + 0.15 * ang_calm
-                - 0.8 * torso_straight_pen
-                - energy_pen
-            )
+        stage_w = self.stage_t[0]
+        reward = (1.0 - stage_w) * rew_stand + stage_w * rew_walk
 
         fallen = (
             (self.pos[:, 1] < 1.65)
@@ -501,25 +542,74 @@ class BipedPhysicsEnv:
         self.ep_reward += reward
         self.ep_upright += upright
 
-        completed_info = []
-        done_ids = torch.nonzero(done, as_tuple=False).squeeze(-1)
-        if done_ids.numel() > 0:
-            for idx in done_ids.tolist():
-                steps = max(1, int(self.step_count[idx].item()))
-                completed_info.append(
-                    {
-                        "env": idx,
-                        "reward": float(self.ep_reward[idx].item()),
-                        "steps": steps,
-                        "upright": float(self.ep_upright[idx].item() / steps),
-                        "distance": float((self.pos[idx, 0] - self.start_x[idx]).item()),
-                        "fallen": bool(fallen[idx].item()),
-                    }
-                )
-            self.reset(done_ids)
+        # Accumulate episode summaries directly on GPU with zero CPU-GPU syncs
+        d_f = done.float()
+        steps_f = self.step_count.float().clamp(min=1.0)
+        dist = self.pos[:, 0] - self.start_x
+        self.ep_count_acc += d_f.sum()
+        self.ep_rew_acc += (self.ep_reward * d_f).sum()
+        self.ep_up_acc += ((self.ep_upright / steps_f) * d_f).sum()
+        self.ep_len_acc += (steps_f * d_f).sum()
+        self.ep_dist_acc += (dist * d_f).sum()
 
+        neg_inf = torch.full_like(self.ep_reward, -1e9)
+        max_rew = torch.where(done, self.ep_reward, neg_inf).max()
+        self.best_rew_t.copy_(torch.maximum(self.best_rew_t, max_rew))
+        walk_dist = torch.where(done & (stage_w > 0.5), dist, torch.zeros_like(dist)).max()
+        self.best_dist_t.copy_(torch.maximum(self.best_dist_t, walk_dist))
+
+        self._reset_masked(done)
+        self._update_foot_metrics()
+        self._write_hero_vec()
         obs = self.get_obs()
-        return obs, reward, done, completed_info
+        return obs, reward, done
+
+    def _write_hero_vec(self) -> None:
+        self.hero_vec[:3].copy_(self.pos[0])
+        self.hero_vec[3:6].copy_(self.eul[0])
+        self.hero_vec[6:21].copy_(self.q[0])
+        self.hero_vec[21:23].copy_(self.foot_contact[0])
+        self.hero_vec[23] = self.vel[0, 0]
+        self.hero_vec[24] = self.step_count[0].float()
+
+    def step_gpu(self, action: torch.Tensor, dt_ctrl: float = 1.0 / 45.0, substeps: int = 4):
+        """Pure-GPU step without CPU synchronization (CUDA-Graph capturable)."""
+        return self._step_core(action, dt_ctrl, substeps)
+
+    def consume_gpu_stats(self) -> dict | None:
+        """Read and reset accumulated GPU episode metrics once per rollout window."""
+        vec = torch.stack(
+            [
+                self.ep_count_acc[0],
+                self.ep_rew_acc[0],
+                self.ep_up_acc[0],
+                self.ep_len_acc[0],
+                self.ep_dist_acc[0],
+                self.best_rew_t[0],
+                self.best_dist_t[0],
+            ]
+        ).tolist()
+        self.ep_count_acc.zero_()
+        self.ep_rew_acc.zero_()
+        self.ep_up_acc.zero_()
+        self.ep_len_acc.zero_()
+        self.ep_dist_acc.zero_()
+        count = int(vec[0])
+        if count <= 0:
+            return {
+                "count": 0,
+                "best_reward": vec[5],
+                "best_distance": vec[6],
+            }
+        return {
+            "count": count,
+            "avg_reward": vec[1] / count,
+            "avg_upright": vec[2] / count,
+            "avg_length": vec[3] / count,
+            "avg_distance": vec[4] / count,
+            "best_reward": vec[5],
+            "best_distance": vec[6],
+        }
 
     def get_obs(self) -> torch.Tensor:
         """Build [N, 45] policy observation vector on GPU."""
@@ -530,33 +620,34 @@ class BipedPhysicsEnv:
         yaw_err = _wrap_angle(self.eul[:, 1] - math.pi / 2.0)
         eul_obs = torch.stack([self.eul[:, 0], yaw_err, self.eul[:, 2]], dim=-1)
         ang_norm = self.ang_vel / 8.0
-        stage_feat = torch.full((self.num_envs, 1), float(self.stage), device=self.device)
-        gait_sin = torch.sin(self.gait_phase).unsqueeze(-1) * float(self.stage)
-        gait_cos = torch.cos(self.gait_phase).unsqueeze(-1) * float(self.stage)
+        stage_feat = self.stage_t.view(1, 1).expand(self.num_envs, 1)
+        gait_sin = torch.sin(self.gait_phase).unsqueeze(-1) * stage_feat
+        gait_cos = torch.cos(self.gait_phase).unsqueeze(-1) * stage_feat
 
         return torch.cat(
             [
-                h_norm,          # 1
-                vel_norm,        # 3
-                eul_obs,         # 3
-                ang_norm,        # 3
-                q_norm,          # 15
-                qd_norm,         # 15
-                self.foot_contact,  # 2
-                stage_feat,      # 1
-                gait_sin,        # 1
-                gait_cos,        # 1
+                h_norm,
+                vel_norm,
+                eul_obs,
+                ang_norm,
+                q_norm,
+                qd_norm,
+                self.foot_contact,
+                stage_feat,
+                gait_sin,
+                gait_cos,
             ],
             dim=-1,
         )
 
     def get_hero_snapshot(self) -> dict:
-        """Extract environment 0 state for smooth 3D rendering in Three.js."""
+        """Extract environment 0 state via single batched 25-float copy."""
+        v = self.hero_vec.tolist()
         return {
-            "pos": [round(float(v), 4) for v in self.pos[0].tolist()],
-            "eul": [round(float(v), 4) for v in self.eul[0].tolist()],
-            "joints": [round(float(v), 4) for v in self.q[0].tolist()],
-            "contacts": [int(v) for v in self.foot_contact[0].tolist()],
-            "speed": round(float(self.vel[0, 0].item()), 3),
-            "step": int(self.step_count[0].item()),
+            "pos": [round(v[0], 4), round(v[1], 4), round(v[2], 4)],
+            "eul": [round(v[3], 4), round(v[4], 4), round(v[5], 4)],
+            "joints": [round(x, 4) for x in v[6:21]],
+            "contacts": [int(v[21]), int(v[22])],
+            "speed": round(v[23], 3),
+            "step": int(v[24]),
         }

@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import copy
 import json
+import math
 import time
 from pathlib import Path
 
@@ -21,7 +23,7 @@ class RunningNorm(nn.Module):
         self.register_buffer("count", torch.tensor(1e-4))
 
     @torch.no_grad()
-    def update(self, x: torch.Tensor) -> None:
+    def update(self, x: torch.Tensor, active_w: torch.Tensor | None = None) -> None:
         batch_mean = x.mean(dim=0)
         batch_var = x.var(dim=0, unbiased=False)
         batch_count = float(x.shape[0])
@@ -32,10 +34,17 @@ class RunningNorm(nn.Module):
         m_a = self.var * self.count
         m_b = batch_var * batch_count
         M2 = m_a + m_b + delta.pow(2) * (self.count * batch_count / tot_count)
+        new_var = torch.clamp(M2 / tot_count, min=1e-4)
 
-        self.mean.copy_(new_mean)
-        self.var.copy_(torch.clamp(M2 / tot_count, min=1e-4))
-        self.count.copy_(tot_count)
+        if active_w is not None:
+            w = active_w[0]
+            self.mean.copy_(w * new_mean + (1.0 - w) * self.mean)
+            self.var.copy_(w * new_var + (1.0 - w) * self.var)
+            self.count.copy_(w * tot_count + (1.0 - w) * self.count)
+        else:
+            self.mean.copy_(new_mean)
+            self.var.copy_(new_var)
+            self.count.copy_(tot_count)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return torch.clamp((x - self.mean) / torch.sqrt(self.var + 1e-6), -8.0, 8.0)
@@ -64,23 +73,41 @@ class ActorCritic(nn.Module):
         )
         # Start with moderate exploration std (~0.32) for smooth early probing
         self.log_std = nn.Parameter(torch.full((act_dim,), -1.15))
+        self.init_weights()
 
+    @torch.no_grad()
+    def init_weights(self) -> None:
+        """Initialize or reset weights in-place so CUDA Graph tensor pointers stay fixed."""
         for m in self.modules():
             if isinstance(m, nn.Linear):
                 nn.init.orthogonal_(m.weight, gain=1.0)
                 nn.init.zeros_(m.bias)
         nn.init.orthogonal_(self.actor[-2].weight, gain=0.05)
+        self.log_std.fill_(-1.15)
+        self.obs_norm.mean.zero_()
+        self.obs_norm.var.fill_(1.0)
+        self.obs_norm.count.fill_(1e-4)
 
-    def act(self, obs: torch.Tensor, deterministic: bool = False):
+    def act(
+        self,
+        obs: torch.Tensor,
+        deterministic: bool = False,
+        train_w: torch.Tensor | None = None,
+    ):
         x = self.obs_norm(obs)
         mean = self.actor(x)
         value = self.critic(x).squeeze(-1)
         if deterministic:
             return mean, torch.zeros(obs.shape[0], device=obs.device), value
-        std = torch.exp(torch.clamp(self.log_std, -2.5, -0.4))
-        dist = Normal(mean, std)
-        raw_act = dist.sample()
-        log_prob = dist.log_prob(raw_act).sum(dim=-1)
+        log_std = torch.clamp(self.log_std, -2.5, -0.4)
+        std = torch.exp(log_std)
+        raw_act = mean + std * torch.randn_like(mean)
+        log_prob = -0.5 * (
+            ((raw_act - mean) / std) ** 2 + 2.0 * log_std + math.log(2.0 * math.pi)
+        ).sum(dim=-1)
+        if train_w is not None:
+            w = train_w[0]
+            raw_act = w * raw_act + (1.0 - w) * mean
         return raw_act, log_prob, value
 
     def evaluate(self, obs: torch.Tensor, actions: torch.Tensor):
@@ -170,7 +197,10 @@ class PPOTrainer:
 
         total = T * N
         batch_size = max(1, total // self.minibatches)
-        pg_losses, vf_losses, entropies = [], [], []
+        pg_sum = torch.zeros(1, device=self.device)
+        vf_sum = torch.zeros(1, device=self.device)
+        ent_sum = torch.zeros(1, device=self.device)
+        steps = 0
 
         for _ in range(self.epochs):
             perm = torch.randperm(total, device=self.device)
@@ -190,20 +220,24 @@ class PPOTrainer:
                 nn.utils.clip_grad_norm_(self.model.parameters(), 0.7)
                 self.optimizer.step()
 
-                pg_losses.append(float(pg_loss.item()))
-                vf_losses.append(float(vf_loss.item()))
-                entropies.append(float(ent.item()))
+                pg_sum = pg_sum + pg_loss.detach()
+                vf_sum = vf_sum + vf_loss.detach()
+                ent_sum = ent_sum + ent.detach()
+                steps += 1
 
+        vals = torch.cat([pg_sum, vf_sum, ent_sum]).tolist()
+        denom = max(1, steps)
         return {
-            "policy_loss": round(sum(pg_losses) / max(1, len(pg_losses)), 4),
-            "value_loss": round(sum(vf_losses) / max(1, len(vf_losses)), 4),
-            "entropy": round(sum(entropies) / max(1, len(entropies)), 4),
+            "policy_loss": round(vals[0] / denom, 4),
+            "value_loss": round(vals[1] / denom, 4),
+            "entropy": round(vals[2] / denom, 4),
         }
 
     def save(self, stats: dict, export_onnx: bool = True) -> dict:
         """Save real PyTorch .pt checkpoint and ONNX inference graph to models/."""
+        cpu_state = {k: v.detach().cpu() for k, v in self.model.state_dict().items()}
         payload = {
-            "model_state": self.model.state_dict(),
+            "model_state": cpu_state,
             "optimizer_state": self.optimizer.state_dict(),
             "stats": stats,
             "saved_at": time.strftime("%Y-%m-%d %H:%M:%S"),
@@ -213,7 +247,8 @@ class PPOTrainer:
         onnx_ok = False
         if export_onnx:
             try:
-                wrapper = PolicyInferenceWrapper(self.model).eval().to("cpu")
+                cpu_model = copy.deepcopy(self.model).eval().to("cpu")
+                wrapper = PolicyInferenceWrapper(cpu_model)
                 dummy = torch.zeros(1, 45, dtype=torch.float32)
                 torch.onnx.export(
                     wrapper,
@@ -224,10 +259,9 @@ class PPOTrainer:
                     opset_version=14,
                     dynamo=False,
                 )
-                self.model.to(self.device)
                 onnx_ok = True
             except Exception:
-                self.model.to(self.device)
+                onnx_ok = False
 
         meta = {
             "pt_file": self.pt_path.name,
@@ -256,12 +290,9 @@ class PPOTrainer:
         return payload.get("stats", {})
 
     def reset_weights(self) -> None:
-        """Re-initialize fresh untrained neural network weights."""
-        obs_dim = self.model.obs_norm.mean.shape[0]
-        act_dim = self.model.log_std.shape[0]
-        lr = self.optimizer.param_groups[0]["lr"]
-        self.model = ActorCritic(obs_dim, act_dim).to(self.device)
-        self.optimizer = torch.optim.Adam(self.model.parameters(), lr=lr)
+        """Re-initialize fresh untrained neural network weights in-place."""
+        self.model.init_weights()
+        self.optimizer.state.clear()
 
     def get_model_info(self) -> dict | None:
         if self.meta_path.exists():

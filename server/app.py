@@ -17,7 +17,7 @@ ALLOWED_DOWNLOADS = {"steel_sentinel_ppo.pt", "steel_sentinel_policy.onnx", "che
 
 def create_app() -> web.Application:
     app = web.Application()
-    manager = LearningManager(models_dir=MODELS_DIR, num_envs=32, rollout_steps=32)
+    manager = LearningManager(models_dir=MODELS_DIR, num_envs=64, rollout_steps=32)
     app["manager"] = manager
 
     async def on_startup(_app: web.Application) -> None:
