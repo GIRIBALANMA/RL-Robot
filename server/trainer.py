@@ -58,19 +58,13 @@ class LearningManager:
         self._subscribers: set[Callable[[dict], Awaitable[None]]] = set()
         self._task: asyncio.Task | None = None
         self._lock = asyncio.Lock()
+        self._rollout_reset_req = False
 
         # Restore prior checkpoint if already saved on disk
-        loaded = self.ppo.load()
+        loaded = self.ppo.load(prefer_best=False)
         if loaded:
-            self.episode = int(loaded.get("episode", 0))
-            self.total_steps = int(loaded.get("total_steps", 0))
-            self.updates = int(loaded.get("updates", 0))
-            self.best_reward = float(loaded.get("best_reward", -1e9))
-            self.best_distance = float(loaded.get("best_distance", 0.0))
-            self.env.best_rew_t.fill_(self.best_reward)
-            self.env.best_dist_t.fill_(self.best_distance)
+            self._apply_loaded_stats(loaded)
             stage = int(loaded.get("stage", 0))
-            self.env.set_stage(stage)
             self.last_milestone = f"Loaded saved model (Ep {self.episode}, Stage {'Walk' if stage else 'Stand'})"
 
         # Pre-allocate static GPU buffers and capture CUDA Graphs for zero-CPU-loop stepping
@@ -188,7 +182,36 @@ class LearningManager:
         payload["hero"] = self.env.get_hero_snapshot()
         return payload
 
-    def save_now(self, export_onnx: bool = True) -> dict:
+    def _apply_loaded_stats(self, loaded: dict) -> int:
+        self.episode = int(loaded.get("episode", 0))
+        self.updates = int(loaded.get("updates", 0))
+        self.total_steps = int(loaded.get("total_steps", 0))
+        self.best_reward = float(loaded.get("best_reward", -1e9))
+        self.best_distance = float(loaded.get("best_distance", 0.0))
+        self.avg_reward = float(loaded.get("avg_reward", max(0.0, self.best_reward * 0.8) if self.best_reward > 0 else 0.0))
+        self.avg_upright = float(loaded.get("avg_upright", 0.90 if self.episode > 500 else 0.0))
+        self.avg_length = float(loaded.get("avg_length", 350.0 if self.episode > 500 else 0.0))
+        self.avg_distance = float(loaded.get("avg_distance", 0.0))
+        self.env.best_rew_t.fill_(self.best_reward)
+        self.env.best_dist_t.fill_(self.best_distance)
+        stage = int(loaded.get("stage", 0))
+        self.env.set_stage(stage)
+        self.history.clear()
+        if self.updates > 0:
+            self.history.append(
+                {
+                    "u": self.updates,
+                    "ep": self.episode,
+                    "r": round(self.avg_reward, 2),
+                    "up": round(self.avg_upright, 3),
+                    "d": round(self.avg_distance, 2),
+                    "l": round(self.avg_length, 1),
+                    "st": stage,
+                }
+            )
+        return stage
+
+    def save_now(self, export_onnx: bool = True, allow_best: bool = True) -> dict:
         stats = {
             "episode": self.episode,
             "updates": self.updates,
@@ -196,29 +219,31 @@ class LearningManager:
             "stage": self.env.stage,
             "best_reward": self.best_reward if self.best_reward > -1e8 else 0.0,
             "best_distance": self.best_distance,
+            "avg_reward": self.avg_reward,
+            "avg_upright": self.avg_upright,
+            "avg_length": self.avg_length,
+            "avg_distance": self.avg_distance,
         }
-        meta = self.ppo.save(stats, export_onnx=export_onnx)
+        meta = self.ppo.save(stats, export_onnx=export_onnx, allow_best=allow_best)
         self._last_save_time = time.time()
         self.last_milestone = f"Saved model checkpoint (Ep {self.episode}, {meta['pt_bytes'] // 1024} KB)"
         return meta
 
     async def load_saved(self) -> dict | None:
         async with self._lock:
-            loaded = self.ppo.load()
+            loaded = self.ppo.load(prefer_best=True)
             if not loaded:
                 return None
-            self.episode = int(loaded.get("episode", 0))
-            self.updates = int(loaded.get("updates", 0))
-            self.total_steps = int(loaded.get("total_steps", 0))
-            self.best_reward = float(loaded.get("best_reward", -1e9))
-            self.best_distance = float(loaded.get("best_distance", 0.0))
-            self.env.best_rew_t.fill_(self.best_reward)
-            self.env.best_dist_t.fill_(self.best_distance)
-            stage = int(loaded.get("stage", 0))
-            self.env.set_stage(stage)
+            stage = self._apply_loaded_stats(loaded)
             self.env.reset()
+            self.env.consume_gpu_stats()
             self._s_obs.copy_(self.env.get_obs())
-            self.last_milestone = f"Restored saved model (Ep {self.episode}, Stage {'Walk' if stage else 'Stand'})"
+            self._rollout_reset_req = True
+            self._last_save_time = time.time()
+            src_label = "best saved model" if loaded.get("_loaded_source") == "best" else "saved model"
+            self.last_milestone = (
+                f"Restored {src_label} (Ep {self.episode}, Stage {'Walk' if stage else 'Stand'} · {self.avg_upright:.0%})"
+            )
         await self._broadcast(self._stats_snapshot())
         return self.ppo.get_model_info()
 
@@ -242,7 +267,9 @@ class LearningManager:
             self.env.best_rew_t.fill_(-1e9)
             self.env.best_dist_t.fill_(0.0)
             self._s_obs.copy_(self.env.get_obs())
-            self.last_milestone = "Reset policy weights — learning from scratch"
+            self._rollout_reset_req = True
+            self._last_save_time = time.time()
+            self.last_milestone = "Reset policy weights — learning from scratch (best checkpoint preserved)"
         await self._broadcast(self._stats_snapshot())
         return self._stats_snapshot()
 
@@ -333,6 +360,9 @@ class LearningManager:
             base_interval = (1.0 / 28.0) / (self.speed_mult / ticks_this_frame)
 
             async with self._lock:
+                if self._rollout_reset_req:
+                    step_idx = 0
+                    self._rollout_reset_req = False
                 for _ in range(ticks_this_frame):
                     is_eval = self.play_mode == "eval"
                     self._step_once_gpu(is_eval)
@@ -362,7 +392,10 @@ class LearningManager:
                         gstats = self.env.consume_gpu_stats()
                         if gstats["count"] > 0:
                             self.episode += gstats["count"]
-                            a = 0.35 if self.updates > 1 else 1.0
+                            if self.avg_length <= 0.0 and gstats["count"] >= max(8, N // 4):
+                                a = 1.0
+                            else:
+                                a = min(0.35, max(0.05, gstats["count"] / float(N)))
                             self.avg_reward = (1 - a) * self.avg_reward + a * gstats["avg_reward"]
                             self.avg_upright = (1 - a) * self.avg_upright + a * gstats["avg_upright"]
                             self.avg_length = (1 - a) * self.avg_length + a * gstats["avg_length"]
@@ -395,10 +428,11 @@ class LearningManager:
                                 f"Milestone: Standing balanced ({self.avg_upright:.0%}) — graduating to Walk!"
                             )
                         elif (
-                            self.updates % 20 == 0
-                            or (time.time() - self._last_save_time > 18.0 and self.updates > 0)
+                            self.updates >= 20
+                            and (self.updates % 20 == 0 or (time.time() - self._last_save_time > 18.0))
                         ):
-                            self.save_now(export_onnx=(self.updates % 40 == 0))
+                            allow_best = self.avg_length >= 160.0
+                            self.save_now(export_onnx=(self.updates % 40 == 0), allow_best=allow_best)
 
                         await self._broadcast(self._stats_snapshot())
 
