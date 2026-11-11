@@ -12,12 +12,15 @@ from .trainer import LearningManager
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
 MODELS_DIR = ROOT_DIR / "models"
-ALLOWED_DOWNLOADS = {"steel_sentinel_ppo.pt", "steel_sentinel_policy.onnx", "checkpoints.json"}
+ALLOWED_DOWNLOADS = {
+    "stand_ppo.pt", "stand_best.pt", "stand_policy.onnx", "stand_meta.json",
+    "walk_ppo.pt", "walk_best.pt", "walk_policy.onnx", "walk_meta.json",
+}
 
 
 def create_app() -> web.Application:
     app = web.Application()
-    manager = LearningManager(models_dir=MODELS_DIR, num_envs=64, rollout_steps=48)
+    manager = LearningManager(models_dir=MODELS_DIR, num_envs=24, rollout_steps=64)
     app["manager"] = manager
 
     async def on_startup(_app: web.Application) -> None:
@@ -50,19 +53,30 @@ def create_app() -> web.Application:
         res = await manager.nudge(direction)
         return web.json_response(res)
 
-    async def save_handler(_req: web.Request) -> web.Response:
-        meta = manager.save_now(export_onnx=True)
+    async def _opt_mode(req: web.Request) -> str | None:
+        try:
+            body = await req.json()
+            m = body.get("mode")
+            return str(m) if m in ("stand", "walk") else None
+        except Exception:
+            return None
+
+    async def save_handler(req: web.Request) -> web.Response:
+        mode = await _opt_mode(req)
+        meta = manager.save_now(mode=mode, export_onnx=True)
         await manager._broadcast(manager._stats_snapshot())
         return web.json_response({"ok": True, "model": meta})
 
-    async def load_handler(_req: web.Request) -> web.Response:
-        meta = await manager.load_saved()
+    async def load_handler(req: web.Request) -> web.Response:
+        mode = await _opt_mode(req)
+        meta = await manager.load_saved(mode=mode)
         if meta is None:
-            return web.json_response({"ok": False, "error": "No saved model checkpoint found"}, status=404)
+            return web.json_response({"ok": False, "error": "No saved model checkpoint found for this mode"}, status=404)
         return web.json_response({"ok": True, "model": meta})
 
-    async def reset_handler(_req: web.Request) -> web.Response:
-        res = await manager.reset_training()
+    async def reset_handler(req: web.Request) -> web.Response:
+        mode = await _opt_mode(req)
+        res = await manager.reset_training(mode=mode)
         return web.json_response({"ok": True, "state": res})
 
     async def download_handler(req: web.Request) -> web.StreamResponse:

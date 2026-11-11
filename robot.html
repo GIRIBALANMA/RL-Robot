@@ -38,9 +38,9 @@
             <span class="legend"><i class="lg-rew"></i>Reward <i class="lg-up"></i>Upright</span>
           </div>
 
-          <ol class="stepper" aria-label="Curriculum stages">
-            <li id="step-stand" data-state="active"><span>01</span> Stand &amp; Arm Balance</li>
-            <li id="step-walk" data-state="queued"><span>02</span> Walk &amp; Arm Swing</li>
+          <ol class="stepper" aria-label="Isolated robot models">
+            <li id="step-stand" data-state="active"><span>01</span> Stand Model</li>
+            <li id="step-walk" data-state="queued"><span>02</span> Walk Model</li>
           </ol>
 
           <p id="milestone-banner" class="milestone" aria-live="polite">Initializing GPU physics &amp; policy...</p>
@@ -75,10 +75,9 @@
           </div>
 
           <div class="ctrl-group">
-            <span class="ctrl-label">Curriculum Stage</span>
+            <span class="ctrl-label">Model Mode (Isolated)</span>
             <div class="pill-row">
-              <button type="button" data-stage="auto" aria-pressed="true">Auto</button>
-              <button type="button" data-stage="stand" aria-pressed="false">Stand</button>
+              <button type="button" data-stage="stand" aria-pressed="true">Stand</button>
               <button type="button" data-stage="walk" aria-pressed="false">Walk</button>
             </div>
           </div>
@@ -104,17 +103,17 @@
           <div class="vault">
             <div class="vault-head">
               <h3>Saved Model Vault</h3>
-              <span class="mono tag-disk">models/</span>
+              <span id="vault-mode-tag" class="mono tag-disk">models/ · stand</span>
             </div>
-            <p id="model-meta" class="model-meta">No checkpoint saved yet — auto-saves on milestones.</p>
+            <p id="model-meta" class="model-meta">No stand checkpoint saved yet.</p>
             <div class="vault-actions">
               <button type="button" id="btn-save" class="btn-ok">Save Now</button>
               <button type="button" id="btn-load" class="btn-ghost">Load</button>
               <button type="button" id="btn-reset-weights" class="btn-danger">Reset</button>
             </div>
             <div class="vault-downloads">
-              <a id="dl-pt" href="/api/models/download/steel_sentinel_ppo.pt" hidden>Download .pt</a>
-              <a id="dl-onnx" href="/api/models/download/steel_sentinel_policy.onnx" hidden>Download .onnx</a>
+              <a id="dl-pt" href="/api/models/download/stand_ppo.pt" hidden>Download .pt</a>
+              <a id="dl-onnx" href="/api/models/download/stand_policy.onnx" hidden>Download .onnx</a>
             </div>
           </div>
         </aside>

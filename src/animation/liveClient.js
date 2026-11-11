@@ -122,12 +122,13 @@ export function createLiveClient({ onTelemetry, onConnectionChange }) {
     samplePose,
     setPaused: (paused) => sendWs({ action: 'control', paused }),
     setSpeed: (speed_mult) => sendWs({ action: 'control', speed_mult }),
-    setStageMode: (curriculum_mode) => sendWs({ action: 'control', curriculum_mode }),
+    setRobotMode: (mode) => sendWs({ action: 'control', mode }),
+    setStageMode: (mode) => sendWs({ action: 'control', mode }),
     setPlayMode: (play_mode) => sendWs({ action: 'control', play_mode }),
     nudgeRobot: (dir = 'random') => postJson('/api/nudge', { dir }),
-    saveModel: () => postJson('/api/models/save'),
-    loadModel: () => postJson('/api/models/load'),
-    resetModel: () => postJson('/api/models/reset'),
+    saveModel: (mode) => postJson('/api/models/save', mode ? { mode } : {}),
+    loadModel: (mode) => postJson('/api/models/load', mode ? { mode } : {}),
+    resetModel: (mode) => postJson('/api/models/reset', mode ? { mode } : {}),
     destroy: () => {
       destroyed = true;
       if (reconnectTimer) clearTimeout(reconnectTimer);

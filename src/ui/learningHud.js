@@ -1,6 +1,7 @@
-/** Learning Lab HUD controller: mode tabs, telemetry readouts, Canvas chart, and Model Vault. */
+/** Learning Lab HUD controller: isolated Stand/Walk modes, telemetry readouts, Canvas chart, and Model Vault. */
 export function createLearningHud({ liveClient, onModeChange }) {
   let mode = 'learn';
+  let activeRobotMode = 'stand';
   let bestDistance = 0;
   let lastMilestone = '';
   let currentPaused = false;
@@ -34,6 +35,7 @@ export function createLearningHud({ liveClient, onModeChange }) {
   const btnSave = document.getElementById('btn-save');
   const btnLoad = document.getElementById('btn-load');
   const btnResetWeights = document.getElementById('btn-reset-weights');
+  const vaultModeTag = document.getElementById('vault-mode-tag');
   const modelMetaEl = document.getElementById('model-meta');
   const dlPt = document.getElementById('dl-pt');
   const dlOnnx = document.getElementById('dl-onnx');
@@ -89,8 +91,9 @@ export function createLearningHud({ liveClient, onModeChange }) {
   stageBtns.forEach((btn) => {
     btn.addEventListener('click', () => {
       const st = btn.dataset.stage;
+      activeRobotMode = st === 'walk' ? 'walk' : 'stand';
       stageBtns.forEach((b) => b.setAttribute('aria-pressed', String(b === btn)));
-      liveClient.setStageMode(st);
+      liveClient.setRobotMode(activeRobotMode);
     });
   });
 
@@ -105,8 +108,8 @@ export function createLearningHud({ liveClient, onModeChange }) {
   btnSave.addEventListener('click', async () => {
     btnSave.disabled = true;
     try {
-      const res = await liveClient.saveModel();
-      if (res?.model) renderModelInfo(res.model);
+      const res = await liveClient.saveModel(activeRobotMode);
+      if (res?.model) renderModelInfo(res.model, activeRobotMode);
     } finally {
       btnSave.disabled = false;
     }
@@ -115,8 +118,8 @@ export function createLearningHud({ liveClient, onModeChange }) {
   btnLoad.addEventListener('click', async () => {
     btnLoad.disabled = true;
     try {
-      const res = await liveClient.loadModel();
-      if (res?.model) renderModelInfo(res.model);
+      const res = await liveClient.loadModel(activeRobotMode);
+      if (res?.model) renderModelInfo(res.model, activeRobotMode);
     } finally {
       btnLoad.disabled = false;
     }
@@ -125,15 +128,18 @@ export function createLearningHud({ liveClient, onModeChange }) {
   btnResetWeights.addEventListener('click', async () => {
     btnResetWeights.disabled = true;
     try {
-      await liveClient.resetModel();
+      await liveClient.resetModel(activeRobotMode);
     } finally {
       btnResetWeights.disabled = false;
     }
   });
 
-  function renderModelInfo(info) {
+  function renderModelInfo(info, robotMode = activeRobotMode) {
+    if (vaultModeTag) {
+      vaultModeTag.textContent = `models/ · ${robotMode}`;
+    }
     if (!info) {
-      modelMetaEl.textContent = 'No checkpoint saved yet — auto-saves on milestones.';
+      modelMetaEl.textContent = `No ${robotMode} checkpoint saved yet — click Save Now or wait for auto-save.`;
       dlPt.hidden = true;
       dlOnnx.hidden = true;
       return;
@@ -144,8 +150,14 @@ export function createLearningHud({ liveClient, onModeChange }) {
       `<strong>${info.pt_file}</strong> (${ptKb} KB)` +
       (info.onnx_file ? ` · <strong>${info.onnx_file}</strong> (${onnxKb} KB)` : '') +
       `<br>Ep ${info.episode ?? 0} · Best dist ${info.best_distance ?? 0}u · ${info.saved_at ?? ''}`;
+    dlPt.href = `/api/models/download/${encodeURIComponent(info.pt_file)}`;
     dlPt.hidden = !info.pt_file;
-    dlOnnx.hidden = !info.onnx_file;
+    if (info.onnx_file) {
+      dlOnnx.href = `/api/models/download/${encodeURIComponent(info.onnx_file)}`;
+      dlOnnx.hidden = false;
+    } else {
+      dlOnnx.hidden = true;
+    }
   }
 
   function drawChart(history) {
@@ -223,15 +235,16 @@ export function createLearningHud({ liveClient, onModeChange }) {
     valLoss.textContent = Number(msg.policy_loss ?? 0).toFixed(3);
     valSteps.textContent = `${((msg.total_steps || 0) / 1000).toFixed(1)}k`;
 
-    const isWalk = Number(msg.stage) === 1;
-    stageStandEl.dataset.state = isWalk ? 'done' : 'active';
+    const isWalk = (msg.active_mode || msg.curriculum_mode) === 'walk' || Number(msg.stage) === 1;
+    activeRobotMode = isWalk ? 'walk' : 'stand';
+    stageStandEl.dataset.state = isWalk ? 'queued' : 'active';
     stageWalkEl.dataset.state = isWalk ? 'active' : 'queued';
 
     speedBtns.forEach((b) =>
       b.setAttribute('aria-pressed', String(Number(b.dataset.speed) === Number(msg.speed_mult))),
     );
     stageBtns.forEach((b) =>
-      b.setAttribute('aria-pressed', String(b.dataset.stage === msg.curriculum_mode)),
+      b.setAttribute('aria-pressed', String(b.dataset.stage === activeRobotMode)),
     );
     policyBtns.forEach((b) =>
       b.setAttribute('aria-pressed', String(b.dataset.policy === msg.play_mode)),
@@ -242,7 +255,7 @@ export function createLearningHud({ liveClient, onModeChange }) {
       milestoneEl.textContent = msg.milestone;
     }
 
-    renderModelInfo(msg.model_info);
+    renderModelInfo(msg.model_info, activeRobotMode);
     drawChart(msg.history);
   }
 

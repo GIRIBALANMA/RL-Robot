@@ -83,18 +83,12 @@ class BipedPhysicsEnv:
         self.best_rew_t = torch.full((1,), -1e9, device=self.device)
         self.best_dist_t = torch.zeros(1, device=self.device)
 
-        self._completed: list[tuple[int, float, float, int, float]] = []
+        self._completed: list[tuple[float, float, int, float]] = []
         self._obs_np = np.zeros((n, self.OBS_DIM), dtype=np.float32)
         self._rew_np = np.zeros(n, dtype=np.float32)
         self._done_np = np.zeros(n, dtype=np.float32)
 
         self.reset()
-
-    def _env_stage(self, i: int) -> int:
-        # Keep 25% of background envs on Stage 0 when training Walk so Stand/Push Recovery is never forgotten
-        if self.stage == 1 and self.num_envs >= 8 and i >= (self.num_envs * 3) // 4:
-            return 0
-        return self.stage
 
     def set_stage(self, stage: int) -> None:
         self.stage = 1 if stage >= 1 else 0
@@ -111,7 +105,6 @@ class BipedPhysicsEnv:
     def _reset_env(self, i: int) -> None:
         d = self.datas[i]
         mujoco.mj_resetData(self.model, d)
-        st = self._env_stage(i)
 
         d.qpos[0] = 0.0
         d.qpos[1] = float(np.random.uniform(-0.08, 0.08))
@@ -120,8 +113,8 @@ class BipedPhysicsEnv:
         q0 = np.clip(J_NOM + np.random.uniform(-0.04, 0.04, size=self.ACT_DIM), J_MIN, J_MAX)
         d.qpos[self.qpos_ids] = q0
         d.ctrl[:] = q0
-        if st == 1 and i > 0:
-            d.qvel[0] = float(np.random.uniform(0.0, 0.55))
+        if self.stage == 1 and i > 0:
+            d.qvel[0] = float(np.random.uniform(0.0, 0.45))
         else:
             d.qvel[0] = float(np.random.uniform(-0.06, 0.06))
         d.qvel[1] = float(np.random.uniform(-0.06, 0.06))
@@ -181,7 +174,6 @@ class BipedPhysicsEnv:
             q_norm = (q17 - self.j_mid) / (self.j_half + 1e-6)
             qd_norm = qd17 / 10.0
 
-            st = self._env_stage(i)
             o = self._obs_np[i]
             o[0] = (float(d.qpos[2]) - 2.65) / 1.0
             o[1] = vx_loc / 5.0
@@ -197,7 +189,7 @@ class BipedPhysicsEnv:
             o[27:44] = qd_norm
             o[44] = cr
             o[45] = cl
-            o[46] = float(st)
+            o[46] = float(self.stage)
             # Heading & foot separation symmetry hints (purely kinematic sensor readings)
             o[47] = float(d.xpos[self.rf_id, 0] - d.xpos[self.lf_id, 0])
             o[48] = -float(d.qpos[1]) / 3.0
@@ -207,11 +199,10 @@ class BipedPhysicsEnv:
 
     def _prepare_ctrl(self, i: int, act_i: np.ndarray) -> None:
         d = self.datas[i]
-        st = self._env_stage(i)
 
-        # Regular directional pushes in Stage 0 training so pure RL learns full-strength Front/Back/Left/Right recovery
+        # Regular directional pushes in Stand mode so pure RL learns Front/Back/Left/Right recovery
         if self.training_pushes and self.step_count[i] > 28:
-            p_thresh = 0.015 if st == 0 else 0.0015
+            p_thresh = 0.015 if self.stage == 0 else 0.0015
             if np.random.random() < p_thresh:
                 pitch, _, roll = mj_quat_to_three_eul_yxz(d.qpos[3:7])
                 if abs(pitch) < 0.20 and abs(roll) < 0.20:
@@ -249,7 +240,6 @@ class BipedPhysicsEnv:
 
         for i, d in enumerate(self.datas):
             self.step_count[i] += 1
-            st = self._env_stage(i)
             pitch, yaw, roll = mj_quat_to_three_eul_yxz(d.qpos[3:7])
             yaw_err = _wrap_angle(yaw - math.pi / 2.0)
             cy, sy = math.cos(yaw_err), math.sin(yaw_err)
@@ -270,7 +260,7 @@ class BipedPhysicsEnv:
             )
             self.prev_act[i] = act_np[i]
 
-            if st == 0:
+            if self.stage == 0:
                 calm = math.exp(-0.35 * (vx_w * vx_w + vy_w * vy_w) - 0.06 * float(np.sum(d.qvel[3:6] ** 2)))
                 rew = 0.30 + 1.8 * upright * height_ok + 0.6 * heading_ok + 0.6 * calm - posture_pen - energy_pen
             else:
@@ -320,10 +310,10 @@ class BipedPhysicsEnv:
             if done:
                 steps_f = max(1, int(self.step_count[i]))
                 dist = float(d.qpos[0]) - float(self.start_x[i])
-                self._completed.append((st, float(self.ep_reward[i]), float(self.ep_upright[i]) / steps_f, steps_f, dist))
-                if st == self.stage and self.ep_reward[i] > best_rew:
+                self._completed.append((float(self.ep_reward[i]), float(self.ep_upright[i]) / steps_f, steps_f, dist))
+                if self.ep_reward[i] > best_rew:
                     best_rew = float(self.ep_reward[i])
-                if st == 1 and dist > best_dist:
+                if self.stage == 1 and dist > best_dist:
                     best_dist = dist
                 self._reset_env(i)
 
@@ -343,16 +333,15 @@ class BipedPhysicsEnv:
         return obs, rew, done, []
 
     def consume_gpu_stats(self) -> dict | None:
-        filtered = [item for item in self._completed if item[0] == self.stage]
-        self._completed.clear()
-        if not filtered:
+        if not self._completed:
             return {
                 "count": 0,
                 "best_reward": float(self.best_rew_t[0].item()),
                 "best_distance": float(self.best_dist_t[0].item()),
             }
-        cnt = len(filtered)
-        arr = np.array([x[1:] for x in filtered], dtype=np.float32)
+        cnt = len(self._completed)
+        arr = np.array(self._completed, dtype=np.float32)
+        self._completed.clear()
         return {
             "count": cnt,
             "avg_reward": float(arr[:, 0].mean()),

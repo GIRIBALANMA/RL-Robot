@@ -135,7 +135,7 @@ class PolicyInferenceWrapper(nn.Module):
 
 
 class PPOTrainer:
-    """Lightweight GPU PPO updater + model persistence in models/."""
+    """Lightweight GPU PPO updater + isolated per-mode persistence in models/."""
 
     def __init__(
         self,
@@ -149,10 +149,12 @@ class PPOTrainer:
         minibatches: int = 6,
         device: torch.device | None = None,
         models_dir: Path | str = "models",
+        model_name: str = "stand",
     ):
         self.device = device or torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.obs_dim = obs_dim
         self.act_dim = act_dim
+        self.model_name = model_name
         self.model = ActorCritic(obs_dim, act_dim).to(self.device)
         self.optimizer = torch.optim.Adam(self.model.parameters(), lr=lr)
         self.gamma = gamma
@@ -163,25 +165,26 @@ class PPOTrainer:
         self.models_dir = Path(models_dir)
         self.models_dir.mkdir(parents=True, exist_ok=True)
 
-        self.pt_path = self.models_dir / "steel_sentinel_ppo.pt"
-        self.best_pt_path = self.models_dir / "steel_sentinel_best.pt"
-        self.onnx_path = self.models_dir / "steel_sentinel_policy.onnx"
-        self.meta_path = self.models_dir / "checkpoints.json"
+        self.pt_path = self.models_dir / f"{model_name}_ppo.pt"
+        self.best_pt_path = self.models_dir / f"{model_name}_best.pt"
+        self.onnx_path = self.models_dir / f"{model_name}_policy.onnx"
+        self.meta_path = self.models_dir / f"{model_name}_meta.json"
         self.update_count = 0
         self._best_score = self._read_best_score()
 
-    @staticmethod
-    def _score_stats(stats: dict | None) -> tuple[float, float, float]:
+    def _score_stats(self, stats: dict | None) -> tuple[float, float, float]:
         if not stats or stats.get("arch") != "mujoco_pure_v1":
             return (-1.0, -1e9, -1.0)
-        stage = int(stats.get("stage", 0))
+        saved_mode = stats.get("model_name")
+        if saved_mode is not None and saved_mode != self.model_name:
+            return (-1.0, -1e9, -1.0)
         dist = float(stats.get("best_distance", 0.0))
         avg_rew = float(stats.get("avg_reward", 0.0))
         best_rew = float(stats.get("best_reward", 0.0))
         up = float(stats.get("avg_upright", 0.0))
         primary_rew = avg_rew if avg_rew > 0.0 else best_rew
         return (
-            round(dist, 2) if stage == 1 and dist >= 3.0 else 0.0,
+            round(dist, 2) if self.model_name == "walk" and dist >= 3.0 else 0.0,
             round(primary_rew, 2),
             round(up * 100.0 + max(best_rew, 0.0) * 0.01, 2),
         )
@@ -282,6 +285,7 @@ class PPOTrainer:
 
     def _build_meta(self, stats: dict, saved_at: str, onnx_ok: bool, source: str = "latest") -> dict:
         return {
+            "model_name": self.model_name,
             "pt_file": self.pt_path.name,
             "pt_bytes": self.pt_path.stat().st_size if self.pt_path.exists() else 0,
             "onnx_file": self.onnx_path.name if onnx_ok else None,
@@ -300,9 +304,10 @@ class PPOTrainer:
         }
 
     def save(self, stats: dict, export_onnx: bool = True, allow_best: bool = True) -> dict:
-        """Save real PyTorch .pt checkpoint, protected best .pt snapshot, and ONNX graph to models/."""
+        """Save isolated PyTorch .pt checkpoint, protected best .pt snapshot, and ONNX graph to models/."""
         stats = dict(stats)
         stats["arch"] = "mujoco_pure_v1"
+        stats["model_name"] = self.model_name
         cpu_state = {k: v.detach().cpu() for k, v in self.model.state_dict().items()}
         payload = {
             "model_state": cpu_state,
@@ -352,6 +357,9 @@ class PPOTrainer:
                 payload = torch.load(path, map_location=self.device, weights_only=False)
                 stats = payload.get("stats", {})
                 if stats.get("arch") != "mujoco_pure_v1":
+                    continue
+                saved_mode = stats.get("model_name")
+                if saved_mode is not None and saved_mode != self.model_name:
                     continue
                 candidates.append((self._score_stats(stats), path, payload))
             except Exception:
