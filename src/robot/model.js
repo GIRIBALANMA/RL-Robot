@@ -51,6 +51,7 @@ export function createRobot(scene) {
 
   const mkLeg = (s) => {
     const hp = grp(hips, s * 0.3, -0.15, 0);
+    hp.rotation.order = 'ZYX';
     add(hp, S(0.22), blk);
     add(hp, C(0.27, 0.2, 1.2, 14), wht, 0, -0.65, 0);
     for (let i = 0; i < 3; i++) {
@@ -88,8 +89,10 @@ export function createRobot(scene) {
     ['lr', 'L arm raise', aL.sh, 'z', 0, 2.8, -1],
     ['le', 'L elbow', aL.el, 'x', 0, 2.4, -1],
     ['rh', 'R hip', lR.hp, 'x', -1.2, 1.2, -1],
+    ['rha', 'R hip side', lR.hp, 'z', -0.45, 0.85, 1],
     ['rk', 'R knee', lR.kn, 'x', 0, 2.2, 1],
     ['lh', 'L hip', lL.hp, 'x', -1.2, 1.2, -1],
+    ['lha', 'L hip side', lL.hp, 'z', -0.45, 0.85, -1],
     ['lk', 'L knee', lL.kn, 'x', 0, 2.2, 1],
     ['ra', 'R ankle', lR.ft, 'x', -0.8, 0.8, 1],
     ['la', 'L ankle', lL.ft, 'x', -0.8, 0.8, 1],

@@ -53,7 +53,7 @@ class RunningNorm(nn.Module):
 class ActorCritic(nn.Module):
     """Compact GPU Actor-Critic MLP for 45-dim biped state -> 15-dim joint targets."""
 
-    def __init__(self, obs_dim: int = 45, act_dim: int = 15):
+    def __init__(self, obs_dim: int = 49, act_dim: int = 17):
         super().__init__()
         self.obs_norm = RunningNorm(obs_dim)
         self.actor = nn.Sequential(
@@ -138,8 +138,8 @@ class PPOTrainer:
 
     def __init__(
         self,
-        obs_dim: int = 45,
-        act_dim: int = 15,
+        obs_dim: int = 49,
+        act_dim: int = 17,
         lr: float = 4e-4,
         gamma: float = 0.99,
         gae_lambda: float = 0.95,
@@ -150,6 +150,8 @@ class PPOTrainer:
         models_dir: Path | str = "models",
     ):
         self.device = device or torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.obs_dim = obs_dim
+        self.act_dim = act_dim
         self.model = ActorCritic(obs_dim, act_dim).to(self.device)
         self.optimizer = torch.optim.Adam(self.model.parameters(), lr=lr)
         self.gamma = gamma
@@ -249,7 +251,7 @@ class PPOTrainer:
             try:
                 cpu_model = copy.deepcopy(self.model).eval().to("cpu")
                 wrapper = PolicyInferenceWrapper(cpu_model)
-                dummy = torch.zeros(1, 45, dtype=torch.float32)
+                dummy = torch.zeros(1, self.obs_dim, dtype=torch.float32)
                 torch.onnx.export(
                     wrapper,
                     dummy,

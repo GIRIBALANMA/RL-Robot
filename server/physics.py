@@ -9,47 +9,49 @@ JOINT_NAMES = [
     "hy", "hx", "wt",
     "rs", "rr", "re",
     "ls", "lr", "le",
-    "rh", "rk", "lh", "lk", "ra", "la",
+    "rh", "rha", "rk",
+    "lh", "lha", "lk",
+    "ra", "la",
 ]
 
-# [min, max, sign] matching src/robot/model.js
+# [min, max, sign] matching src/robot/model.js (17 DOFs including lateral hip abduction/adduction)
 JOINT_MIN = torch.tensor(
-    [-1.0, -0.6, -0.8, -2.5, 0.0, 0.0, -2.5, 0.0, 0.0, -1.2, 0.0, -1.2, 0.0, -0.8, -0.8],
+    [-1.0, -0.6, -0.8, -2.5, 0.0, 0.0, -2.5, 0.0, 0.0, -1.2, -0.45, 0.0, -1.2, -0.45, 0.0, -0.8, -0.8],
     dtype=torch.float32,
 )
 JOINT_MAX = torch.tensor(
-    [1.0, 0.6, 0.8, 2.5, 2.8, 2.4, 2.5, 2.8, 2.4, 1.2, 2.2, 1.2, 2.2, 0.8, 0.8],
+    [1.0, 0.6, 0.8, 2.5, 2.8, 2.4, 2.5, 2.8, 2.4, 1.2, 0.85, 2.2, 1.2, 0.85, 2.2, 0.8, 0.8],
     dtype=torch.float32,
 )
 JOINT_SIGN = torch.tensor(
-    [1.0, 1.0, 1.0, -1.0, 1.0, -1.0, -1.0, -1.0, -1.0, -1.0, 1.0, -1.0, 1.0, 1.0, 1.0],
+    [1.0, 1.0, 1.0, -1.0, 1.0, -1.0, -1.0, -1.0, -1.0, -1.0, 1.0, 1.0, -1.0, -1.0, 1.0, 1.0, 1.0],
     dtype=torch.float32,
 )
-# Neutral human-like athletic stance (soft knees, flexed ankles, relaxed bent elbows)
+# Neutral human-like athletic stance (soft knees, flexed ankles, natural hip stance width, bent elbows)
 JOINT_NOM = torch.tensor(
-    [0.0, 0.0, 0.0, 0.0, 0.08, 0.36, 0.0, 0.08, 0.36, 0.12, 0.24, 0.12, 0.24, -0.12, -0.12],
+    [0.0, 0.0, 0.0, 0.0, 0.08, 0.36, 0.0, 0.08, 0.36, 0.12, 0.04, 0.24, 0.12, 0.04, 0.24, -0.12, -0.12],
     dtype=torch.float32,
 )
 ACTION_SCALE = torch.tensor(
-    [0.20, 0.20, 0.25, 1.05, 0.90, 0.85, 1.05, 0.90, 0.85, 0.85, 0.95, 0.85, 0.95, 0.62, 0.62],
+    [0.20, 0.20, 0.25, 1.05, 0.90, 0.85, 1.05, 0.90, 0.85, 0.85, 0.55, 0.95, 0.85, 0.55, 0.95, 0.62, 0.62],
     dtype=torch.float32,
 )
 
-# Compliant human-like PD joint stiffness (flexible knees/ankles/elbows rather than rigid rods)
+# Compliant human-like PD joint stiffness (front/back + left/right hips, flexible knees/ankles/elbows)
 KP = torch.tensor(
-    [12.0, 12.0, 20.0, 22.0, 22.0, 18.0, 22.0, 22.0, 18.0, 46.0, 48.0, 46.0, 48.0, 34.0, 34.0],
+    [12.0, 12.0, 20.0, 22.0, 22.0, 18.0, 22.0, 22.0, 18.0, 46.0, 44.0, 48.0, 46.0, 44.0, 48.0, 34.0, 34.0],
     dtype=torch.float32,
 )
 KD = torch.tensor(
-    [1.8, 1.8, 2.8, 2.6, 2.6, 2.2, 2.6, 2.6, 2.2, 4.8, 5.0, 4.8, 5.0, 3.8, 3.8],
+    [1.8, 1.8, 2.8, 2.6, 2.6, 2.2, 2.6, 2.6, 2.2, 4.8, 4.6, 5.0, 4.8, 4.6, 5.0, 3.8, 3.8],
     dtype=torch.float32,
 )
 TORQUE_LIMIT = torch.tensor(
-    [4.0, 4.0, 8.0, 11.0, 11.0, 8.0, 11.0, 11.0, 8.0, 30.0, 32.0, 30.0, 32.0, 24.0, 24.0],
+    [4.0, 4.0, 8.0, 11.0, 11.0, 8.0, 11.0, 11.0, 8.0, 30.0, 26.0, 32.0, 30.0, 26.0, 32.0, 24.0, 24.0],
     dtype=torch.float32,
 )
 JOINT_INERTIA = torch.tensor(
-    [0.06, 0.06, 0.14, 0.09, 0.09, 0.07, 0.09, 0.09, 0.07, 0.20, 0.18, 0.20, 0.18, 0.12, 0.12],
+    [0.06, 0.06, 0.14, 0.09, 0.09, 0.07, 0.09, 0.09, 0.07, 0.20, 0.18, 0.18, 0.20, 0.18, 0.18, 0.12, 0.12],
     dtype=torch.float32,
 )
 
@@ -82,6 +84,14 @@ def _rot_yxz(pitch: torch.Tensor, yaw: torch.Tensor, roll: torch.Tensor) -> torc
     return torch.stack([row0, row1, row2], dim=-2)
 
 
+def _rot_z(az: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
+    """Rotate 3D vectors v [..., 3] around local Z by angles az [...] (broadcastable)."""
+    cz = torch.cos(az)
+    sz = torch.sin(az)
+    vx, vy, vz = v[..., 0], v[..., 1], v[..., 2]
+    return torch.stack([vx * cz - vy * sz, vx * sz + vy * cz, vz], dim=-1)
+
+
 def _wrap_angle(a: torch.Tensor) -> torch.Tensor:
     return (a + math.pi) % (2.0 * math.pi) - math.pi
 
@@ -89,8 +99,8 @@ def _wrap_angle(a: torch.Tensor) -> torch.Tensor:
 class BipedPhysicsEnv:
     """Batched 3D articulated biped physics simulator running on PyTorch CUDA/CPU."""
 
-    OBS_DIM = 45
-    ACT_DIM = 15
+    OBS_DIM = 49
+    ACT_DIM = 17
 
     def __init__(self, num_envs: int = 16, device: torch.device | None = None):
         self.num_envs = num_envs
@@ -160,13 +170,13 @@ class BipedPhysicsEnv:
         self.ep_dist_acc = torch.zeros(1, device=self.device)
         self.best_rew_t = torch.full((1,), -1e9, device=self.device)
         self.best_dist_t = torch.zeros(1, device=self.device)
-        self.hero_vec = torch.zeros(25, device=self.device)
+        self.hero_vec = torch.zeros(27, device=self.device)
 
         # Precompute exact nominal standing height so feet rest cleanly on road on branchless resets
         self.pos[:, 1] = 2.70
         self.eul[:, 1] = math.pi / 2.0
         self.q.copy_(self.j_nom.unsqueeze(0).expand(n, -1))
-        _, _, _, _, _, _, p_corners, _, _ = self._compute_fk()
+        _, _, _, _, _, _, _, p_corners, _, _ = self._compute_fk()
         min_foot_y = float(p_corners[0, ..., 1].min().item())
         self.nom_spawn_y = 2.70 + (ROAD_TOP_Y + 0.004) - min_foot_y
 
@@ -247,38 +257,43 @@ class BipedPhysicsEnv:
         return self.get_obs()
 
     def _compute_fk(self):
-        """Exact 3D forward kinematics for leg joints, foot corners, and body collision spheres."""
+        """Exact 3D forward kinematics for 17-DOF legs (front/back + left/right hips), feet, and arms."""
         R_root = _rot_yxz(self.eul[:, 0], self.eul[:, 1], self.eul[:, 2])  # [N, 3, 3]
-        axis_x_local = R_root[:, :, 0]  # [N, 3] world direction of robot's local X axis
+        axis_z_local = R_root[:, :, 2]  # [N, 3] hip abduction/adduction axis
 
         # Build both legs simultaneously [N, 2, ...] (0=Right s=+1, 1=Left s=-1)
         p_hip = self.pos.unsqueeze(1) + torch.einsum("nij,nlj->nli", R_root, self.hip_local_buf)
 
-        # Signed sagittal angles (model.js convention: rot_x = val * sign)
-        a_hip = torch.stack([self.q[:, 9] * -1.0, self.q[:, 11] * -1.0], dim=1)
-        a_knee = a_hip + torch.stack([self.q[:, 10], self.q[:, 12]], dim=1)
-        a_foot = a_knee + torch.stack([self.q[:, 13], self.q[:, 14]], dim=1)
+        # Signed sagittal + lateral hip angles (matching model.js ZYX hip rotation order)
+        a_hip = torch.stack([self.q[:, 9] * -1.0, self.q[:, 12] * -1.0], dim=1)
+        az_hip = torch.stack([self.q[:, 10], self.q[:, 13] * -1.0], dim=1)
+        a_knee = a_hip + torch.stack([self.q[:, 11], self.q[:, 14]], dim=1)
+        a_foot = a_knee + torch.stack([self.q[:, 15], self.q[:, 16]], dim=1)
+        axis_x_leg = (
+            torch.cos(az_hip).unsqueeze(-1) * R_root[:, :, 0].unsqueeze(1)
+            + torch.sin(az_hip).unsqueeze(-1) * R_root[:, :, 1].unsqueeze(1)
+        )
 
-        # Thigh vector in root frame: Rx(a_hip) @ [0, -1.2, 0] = [0, -1.2*cos, -1.2*sin]
-        thigh_local = torch.stack(
+        # Thigh vector in root frame: Rz(az_hip) @ Rx(a_hip) @ [0, -1.2, 0]
+        thigh_sag = torch.stack(
             [torch.zeros_like(a_hip), -1.2 * torch.cos(a_hip), -1.2 * torch.sin(a_hip)], dim=-1
         )
-        p_knee = p_hip + torch.einsum("nij,nlj->nli", R_root, thigh_local)
+        p_knee = p_hip + torch.einsum("nij,nlj->nli", R_root, _rot_z(az_hip, thigh_sag))
 
-        # Shin vector in root frame: Rx(a_knee) @ [0, -1.15, 0]
-        shin_local = torch.stack(
+        # Shin vector in root frame: Rz(az_hip) @ Rx(a_knee) @ [0, -1.15, 0]
+        shin_sag = torch.stack(
             [torch.zeros_like(a_knee), -1.15 * torch.cos(a_knee), -1.15 * torch.sin(a_knee)], dim=-1
         )
-        p_ankle = p_knee + torch.einsum("nij,nlj->nli", R_root, shin_local)
+        p_ankle = p_knee + torch.einsum("nij,nlj->nli", R_root, _rot_z(az_hip, shin_sag))
 
-        # Foot corners [N, 2, 4, 3]: rotate foot_corners [4, 3] by Rx(a_foot) then R_root
-        ca = torch.cos(a_foot).unsqueeze(-1)  # [N, 2, 1]
+        # Foot corners [N, 2, 4, 3]: Rz(az_hip) @ Rx(a_foot) @ foot_corners
+        ca = torch.cos(a_foot).unsqueeze(-1)
         sa = torch.sin(a_foot).unsqueeze(-1)
         fc = self.foot_corners.view(1, 1, 4, 3)
         fy = fc[..., 1] * ca - fc[..., 2] * sa
         fz = fc[..., 1] * sa + fc[..., 2] * ca
         fx = fc[..., 0].expand_as(fy)
-        corners_local = torch.stack([fx, fy, fz], dim=-1)  # [N, 2, 4, 3]
+        corners_local = _rot_z(az_hip.unsqueeze(-1), torch.stack([fx, fy, fz], dim=-1))
         p_corners = p_ankle.unsqueeze(2) + torch.einsum("nij,nlcj->nlci", R_root, corners_local)
 
         # Body collision points in world (chest, head)
@@ -295,10 +310,10 @@ class BipedPhysicsEnv:
         arm_com_shift = 0.10 * ((arm_r_off + arm_l_off) - self.arm_rest_vec)
         p_com = self.pos + torch.einsum("nij,nj->ni", R_root, self.com_local.unsqueeze(0) + arm_com_shift)
 
-        return R_root, axis_x_local, p_com, p_hip, p_knee, p_ankle, p_corners, p_chest, p_head
+        return R_root, axis_x_leg, axis_z_local, p_com, p_hip, p_knee, p_ankle, p_corners, p_chest, p_head
 
     def _update_foot_metrics(self):
-        _, _, _, _, _, p_ankle, p_corners, _, _ = self._compute_fk()
+        _, _, _, _, _, _, _, p_corners, _, _ = self._compute_fk()
         min_y = p_corners[..., 1].min(dim=-1).values  # [N, 2]
         self.foot_heights.copy_((min_y - ROAD_TOP_Y).clamp(min=0.0))
         self.foot_contact.copy_((min_y <= ROAD_TOP_Y + 0.025).float())
@@ -323,7 +338,7 @@ class BipedPhysicsEnv:
         mu = 1.15
 
         for _ in range(substeps):
-            R_root, axis_x, p_com, p_hip, p_knee, p_ankle, p_corners, p_chest, p_head = self._compute_fk()
+            R_root, axis_x_leg, axis_z, p_com, p_hip, p_knee, p_ankle, p_corners, p_chest, p_head = self._compute_fk()
 
             # Joint PD servo torques
             tau_pd = torch.clamp(
@@ -332,20 +347,21 @@ class BipedPhysicsEnv:
                 self.tau_lim,
             )
 
-            # Foot corner velocities including joint angular velocity contributions
-            # qd signs for leg sagittal axes
-            qd_rh, qd_rk, qd_ra = self.qd[:, 9] * -1.0, self.qd[:, 10], self.qd[:, 13]
-            qd_lh, qd_lk, qd_la = self.qd[:, 11] * -1.0, self.qd[:, 12], self.qd[:, 14]
-            w_hip = torch.stack([qd_rh, qd_lh], dim=1).unsqueeze(-1) * axis_x.unsqueeze(1)  # [N,2,3]
-            w_knee = torch.stack([qd_rk, qd_lk], dim=1).unsqueeze(-1) * axis_x.unsqueeze(1)
-            w_ank = torch.stack([qd_ra, qd_la], dim=1).unsqueeze(-1) * axis_x.unsqueeze(1)
+            # Foot corner velocities including front/back + left/right hip velocities
+            qd_rh, qd_rk, qd_ra = self.qd[:, 9] * -1.0, self.qd[:, 11], self.qd[:, 15]
+            qd_lh, qd_lk, qd_la = self.qd[:, 12] * -1.0, self.qd[:, 14], self.qd[:, 16]
+            qd_rha, qd_lha = self.qd[:, 10], self.qd[:, 13] * -1.0
+            w_hip_x = torch.stack([qd_rh, qd_lh], dim=1).unsqueeze(-1) * axis_x_leg
+            w_hip_z = torch.stack([qd_rha, qd_lha], dim=1).unsqueeze(-1) * axis_z.unsqueeze(1)
+            w_knee = torch.stack([qd_rk, qd_lk], dim=1).unsqueeze(-1) * axis_x_leg
+            w_ank = torch.stack([qd_ra, qd_la], dim=1).unsqueeze(-1) * axis_x_leg
 
             r_com_c = p_corners - p_com.unsqueeze(1).unsqueeze(2)
             v_root_c = self.vel.unsqueeze(1).unsqueeze(2) + torch.cross(
                 self.ang_vel.unsqueeze(1).unsqueeze(2).expand_as(r_com_c), r_com_c, dim=-1
             )
             v_joint_c = (
-                torch.cross(w_hip.unsqueeze(2).expand_as(r_com_c), p_corners - p_hip.unsqueeze(2), dim=-1)
+                torch.cross((w_hip_x + w_hip_z).unsqueeze(2).expand_as(r_com_c), p_corners - p_hip.unsqueeze(2), dim=-1)
                 + torch.cross(w_knee.unsqueeze(2).expand_as(r_com_c), p_corners - p_knee.unsqueeze(2), dim=-1)
                 + torch.cross(w_ank.unsqueeze(2).expand_as(r_com_c), p_corners - p_ankle.unsqueeze(2), dim=-1)
             )
@@ -387,24 +403,27 @@ class BipedPhysicsEnv:
             # Gravity
             F_net[:, 1] -= MASS * GRAVITY
 
-            # Action-reaction joint contact torques for legs: tau_j = sum_c ((p_c - p_j) x F_c) . axis_x
+            # Action-reaction joint contact torques for legs (sagittal + lateral hip abduction)
             tau_c_sum = torch.cross(p_corners - p_hip.unsqueeze(2), F_c, dim=-1).sum(dim=2)
-            tau_c_hip = (tau_c_sum * axis_x.unsqueeze(1)).sum(dim=-1)  # [N, 2]
+            tau_c_hip = (tau_c_sum * axis_x_leg).sum(dim=-1)  # [N, 2]
+            tau_c_hip_z = (tau_c_sum * axis_z.unsqueeze(1)).sum(dim=-1)  # [N, 2]
             tau_c_knee = (
-                torch.cross(p_corners - p_knee.unsqueeze(2), F_c, dim=-1).sum(dim=2) * axis_x.unsqueeze(1)
+                torch.cross(p_corners - p_knee.unsqueeze(2), F_c, dim=-1).sum(dim=2) * axis_x_leg
             ).sum(dim=-1)
             tau_c_ank = (
-                torch.cross(p_corners - p_ankle.unsqueeze(2), F_c, dim=-1).sum(dim=2) * axis_x.unsqueeze(1)
+                torch.cross(p_corners - p_ankle.unsqueeze(2), F_c, dim=-1).sum(dim=2) * axis_x_leg
             ).sum(dim=-1)
 
-            # Convert contact reaction into joint coordinate space (sign-aware, opposes penetration push)
+            # Convert contact reaction into 17-joint coordinate space
             tau_ext = torch.zeros_like(tau_pd)
             tau_ext[:, 9] = tau_c_hip[:, 0] * -1.0
-            tau_ext[:, 11] = tau_c_hip[:, 1] * -1.0
-            tau_ext[:, 10] = tau_c_knee[:, 0]
-            tau_ext[:, 12] = tau_c_knee[:, 1]
-            tau_ext[:, 13] = tau_c_ank[:, 0]
-            tau_ext[:, 14] = tau_c_ank[:, 1]
+            tau_ext[:, 10] = tau_c_hip_z[:, 0]
+            tau_ext[:, 11] = tau_c_knee[:, 0]
+            tau_ext[:, 12] = tau_c_hip[:, 1] * -1.0
+            tau_ext[:, 13] = tau_c_hip_z[:, 1] * -1.0
+            tau_ext[:, 14] = tau_c_knee[:, 1]
+            tau_ext[:, 15] = tau_c_ank[:, 0]
+            tau_ext[:, 16] = tau_c_ank[:, 1]
 
             # Human arm & waist angular-momentum counterbalance reaction on torso (proportional to arm inertia)
             arm_pitch_react = 0.11 * (tau_pd[:, 3] + tau_pd[:, 6])
@@ -475,9 +494,12 @@ class BipedPhysicsEnv:
             -3.0 * ((self.q[:, 4] - desired_rr) ** 2 + (self.q[:, 7] - desired_lr) ** 2)
         )
         elbow_natural = torch.exp(-2.5 * ((self.q[:, 5] - 0.42) ** 2 + (self.q[:, 8] - 0.42) ** 2))
-        # Soft unlocked knees + responsive ankles (no stiff locked brick legs)
-        knee_flex_stand = torch.exp(-3.5 * ((self.q[:, 10] - 0.24) ** 2 + (self.q[:, 12] - 0.24) ** 2))
-        ankle_flex_stand = torch.exp(-3.5 * ((self.q[:, 13] + 0.12) ** 2 + (self.q[:, 14] + 0.12) ** 2))
+        # Soft unlocked knees + responsive ankles + lateral hip brace against roll
+        knee_flex_stand = torch.exp(-3.5 * ((self.q[:, 11] - 0.24) ** 2 + (self.q[:, 14] - 0.24) ** 2))
+        ankle_flex_stand = torch.exp(-3.5 * ((self.q[:, 15] + 0.12) ** 2 + (self.q[:, 16] + 0.12) ** 2))
+        desired_rha = torch.clamp(0.04 + torch.clamp(-roll, min=0.0) * 1.4, -0.15, 0.55)
+        desired_lha = torch.clamp(0.04 + torch.clamp(roll, min=0.0) * 1.4, -0.15, 0.55)
+        hip_side_pose = torch.exp(-4.0 * ((self.q[:, 10] - desired_rha) ** 2 + (self.q[:, 13] - desired_lha) ** 2))
 
         # Blend Stand vs Walk reward purely via GPU scalar so CUDA Graph never branches
         still_bonus = torch.exp(-0.8 * (self.vel[:, 0] ** 2 + self.vel[:, 2] ** 2))
@@ -495,6 +517,7 @@ class BipedPhysicsEnv:
             + 0.25 * elbow_natural
             + 0.25 * knee_flex_stand
             + 0.20 * ankle_flex_stand
+            + 0.25 * hip_side_pose
             + 0.20 * ang_calm
             - torso_straight_pen
             - energy_pen
@@ -505,21 +528,21 @@ class BipedPhysicsEnv:
         vel_match = torch.exp(-1.1 * (vx - self.target_speed) ** 2)
         fwd_progress = torch.clamp(vx, -1.0, 3.6) * 0.65
         heading = torch.exp(-3.5 * yaw_err * yaw_err - 0.9 * vz * vz)
-        arm_counter_err = (self.q[:, 3] + 0.90 * self.q[:, 9]) ** 2 + (self.q[:, 6] + 0.90 * self.q[:, 11]) ** 2
+        arm_counter_err = (self.q[:, 3] + 0.90 * self.q[:, 9]) ** 2 + (self.q[:, 6] + 0.90 * self.q[:, 12]) ** 2
         arm_swing_reward = 0.85 * torch.exp(-3.5 * arm_counter_err)
-        waist_natural = 0.25 * torch.exp(-6.0 * (self.q[:, 2] - 0.14 * (self.q[:, 11] - self.q[:, 9])) ** 2)
+        waist_natural = 0.25 * torch.exp(-6.0 * (self.q[:, 2] - 0.14 * (self.q[:, 12] - self.q[:, 9])) ** 2)
         s_phase = torch.sin(self.gait_phase)
         c_phase = torch.cos(self.gait_phase)
         # Dynamic knee flexion on swing leg + ankle compensation (matching control.md gait!)
         target_rk = 0.20 + torch.clamp(c_phase, min=0.0) * 0.65
         target_lk = 0.20 + torch.clamp(-c_phase, min=0.0) * 0.65
-        knee_flex_walk = 0.50 * torch.exp(-3.0 * ((self.q[:, 10] - target_rk) ** 2 + (self.q[:, 12] - target_lk) ** 2))
+        knee_flex_walk = 0.50 * torch.exp(-3.0 * ((self.q[:, 11] - target_rk) ** 2 + (self.q[:, 14] - target_lk) ** 2))
         ankle_flex_walk = 0.35 * torch.exp(
-            -3.0 * ((self.q[:, 13] - 0.6 * (self.q[:, 9] - self.q[:, 10])) ** 2 + (self.q[:, 14] - 0.6 * (self.q[:, 11] - self.q[:, 12])) ** 2)
+            -3.0 * ((self.q[:, 15] - 0.6 * (self.q[:, 9] - self.q[:, 11])) ** 2 + (self.q[:, 16] - 0.6 * (self.q[:, 12] - self.q[:, 14])) ** 2)
         )
-        stride_sep = torch.clamp(torch.abs(self.q[:, 9] - self.q[:, 11]), 0.0, 0.9)
+        stride_sep = torch.clamp(torch.abs(self.q[:, 9] - self.q[:, 12]), 0.0, 0.9)
         swing_lift = torch.clamp(torch.abs(self.foot_heights[:, 0] - self.foot_heights[:, 1]), 0.0, 0.35)
-        gait_guide = 0.35 * stride_sep + 0.75 * swing_lift + 0.15 * s_phase * (self.q[:, 9] - self.q[:, 11])
+        gait_guide = 0.35 * stride_sep + 0.75 * swing_lift + 0.15 * s_phase * (self.q[:, 9] - self.q[:, 12])
         rew_walk = (
             0.35
             + 1.5 * vel_match
@@ -533,6 +556,7 @@ class BipedPhysicsEnv:
             + 0.30 * elbow_natural
             + knee_flex_walk
             + ankle_flex_walk
+            + 0.25 * hip_side_pose
             + waist_natural
             + gait_guide
             + 0.15 * ang_calm
@@ -581,10 +605,10 @@ class BipedPhysicsEnv:
     def _write_hero_vec(self) -> None:
         self.hero_vec[:3].copy_(self.pos[0])
         self.hero_vec[3:6].copy_(self.eul[0])
-        self.hero_vec[6:21].copy_(self.q[0])
-        self.hero_vec[21:23].copy_(self.foot_contact[0])
-        self.hero_vec[23] = self.vel[0, 0]
-        self.hero_vec[24] = self.step_count[0].float()
+        self.hero_vec[6:23].copy_(self.q[0])
+        self.hero_vec[23:25].copy_(self.foot_contact[0])
+        self.hero_vec[25] = self.vel[0, 0]
+        self.hero_vec[26] = self.step_count[0].float()
 
     def step_gpu(self, action: torch.Tensor, dt_ctrl: float = 1.0 / 45.0, substeps: int = 4):
         """Pure-GPU step without CPU synchronization (CUDA-Graph capturable)."""
@@ -655,13 +679,13 @@ class BipedPhysicsEnv:
         )
 
     def get_hero_snapshot(self) -> dict:
-        """Extract environment 0 state via single batched 25-float copy."""
+        """Extract environment 0 state via single batched 27-float copy."""
         v = self.hero_vec.tolist()
         return {
             "pos": [round(v[0], 4), round(v[1], 4), round(v[2], 4)],
             "eul": [round(v[3], 4), round(v[4], 4), round(v[5], 4)],
-            "joints": [round(x, 4) for x in v[6:21]],
-            "contacts": [int(v[21]), int(v[22])],
-            "speed": round(v[23], 3),
-            "step": int(v[24]),
+            "joints": [round(x, 4) for x in v[6:23]],
+            "contacts": [int(v[23]), int(v[24])],
+            "speed": round(v[25], 3),
+            "step": int(v[26]),
         }
