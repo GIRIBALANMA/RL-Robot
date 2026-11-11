@@ -1,5 +1,5 @@
 /** Wire keyboard, action buttons, and pointer/wheel orbit controls. */
-export function createControls({ canvas, resetPose }) {
+export function createControls({ canvas, resetPose, isManualMode = () => true }) {
   const state = {
     keys: {},
     btn: 0,
@@ -18,6 +18,7 @@ export function createControls({ canvas, resetPose }) {
   };
 
   addEventListener('keydown', (e) => {
+    if (!isManualMode()) return;
     state.keys[e.key.toLowerCase()] = 1;
     if (e.key.toLowerCase() === 'w') state.waveT = 3;
     if (e.key === 'ArrowUp') {
@@ -28,6 +29,7 @@ export function createControls({ canvas, resetPose }) {
   });
 
   addEventListener('keyup', (e) => {
+    if (!isManualMode()) return;
     state.keys[e.key.toLowerCase()] = 0;
   });
 

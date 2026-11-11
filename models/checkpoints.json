@@ -1,0 +1,13 @@
+{
+  "pt_file": "steel_sentinel_ppo.pt",
+  "pt_bytes": 580154,
+  "onnx_file": "steel_sentinel_policy.onnx",
+  "onnx_bytes": 99212,
+  "saved_at": "2026-11-11 11:36:06",
+  "episode": 3015,
+  "total_steps": 307200,
+  "stage": 1,
+  "best_reward": 1177.24,
+  "best_distance": 4.54,
+  "device": "cuda"
+}

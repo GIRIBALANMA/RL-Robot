@@ -3,20 +3,138 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <title>Steel Sentinel – Jointed Robot on the Road</title>
+  <title>Steel Sentinel | Real-Time GPU Robot Learning Lab</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@500;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="styles/main.css">
 </head>
 <body>
-  <div class="hud"><b>STEEL SENTINEL</b><br>A / D or ← / → walk · Shift run · W wave · ↑ jump · ↓ prone (hold)<br>Drag to orbit · wheel or pinch to zoom<br>Open “Joints” to pose each joint.</div>
-  <details class="panel" open><summary>Joints</summary><div id="sl"></div></details>
-  <div class="bar">
-    <button type="button" id="bl">◀</button>
-    <button type="button" id="bj">Jump</button>
-    <button type="button" id="bp">Prone</button>
-    <button type="button" id="bw">Wave</button>
-    <button type="button" id="br">▶</button>
-    <button type="button" id="bx">Reset</button>
-  </div>
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-tag">RL-LAB</span>
+      <h1>STEEL SENTINEL</h1>
+    </div>
+
+    <div class="mode-tabs" role="tablist" focusgroup="tablist nomemory" aria-label="Simulation mode">
+      <button type="button" role="tab" id="tab-learn" aria-selected="true" focusgroupstart>Learn Mode</button>
+      <button type="button" role="tab" id="tab-manual" aria-selected="false">Manual Sandbox</button>
+    </div>
+
+    <div class="status-pill" aria-label="Compute backend status">
+      <span id="conn-dot" class="dot" data-status="connecting" aria-hidden="true"></span>
+      <span id="conn-text">Connecting...</span>
+      <span class="sep" aria-hidden="true">·</span>
+      <span id="gpu-text" class="mono">GPU idle</span>
+    </div>
+  </header>
+
+  <main class="hud-layer">
+    <section id="panel-learn" role="tabpanel" aria-labelledby="tab-learn" class="learn-grid">
+      <div class="learn-inner">
+        <aside class="card telemetry-card" aria-label="Learning telemetry">
+          <div class="card-head">
+            <h2>Curriculum &amp; Telemetry</h2>
+            <span class="legend"><i class="lg-rew"></i>Reward <i class="lg-up"></i>Upright</span>
+          </div>
+
+          <ol class="stepper" aria-label="Curriculum stages">
+            <li id="step-stand" data-state="active"><span>01</span> Stand &amp; Balance</li>
+            <li id="step-walk" data-state="queued"><span>02</span> Stride &amp; Walk</li>
+          </ol>
+
+          <p id="milestone-banner" class="milestone" aria-live="polite">Initializing GPU physics &amp; policy...</p>
+
+          <div class="kpi-grid">
+            <div class="kpi"><span>Episode</span><strong id="val-ep" class="mono">0</strong></div>
+            <div class="kpi"><span>Avg Reward</span><strong id="val-rew" class="mono">0.0</strong></div>
+            <div class="kpi"><span>Upright</span><strong id="val-up" class="mono">0%</strong></div>
+            <div class="kpi"><span>Best Walk</span><strong id="val-dist" class="mono">0.0 u</strong></div>
+            <div class="kpi"><span>Policy Loss</span><strong id="val-loss" class="mono">0.000</strong></div>
+            <div class="kpi"><span>Sim Steps</span><strong id="val-steps" class="mono">0.0k</strong></div>
+          </div>
+
+          <canvas id="reward-chart" height="88" aria-label="Live reward and upright stability chart"></canvas>
+          <p class="hint">Drag 3D viewport to orbit · wheel or pinch to zoom · emerald rings mark foot road contact.</p>
+        </aside>
+
+        <aside class="card control-card" aria-label="Trainer and model persistence">
+          <div class="card-head">
+            <h2>Training Pace</h2>
+            <div class="btn-pair">
+              <button type="button" id="btn-pause" class="btn-acc" aria-pressed="false">Pause</button>
+              <button type="button" id="btn-nudge" class="btn-ghost" title="Apply lateral push impulse">Nudge</button>
+            </div>
+          </div>
+
+          <div class="ctrl-group">
+            <span class="ctrl-label">Watch Speed (Resource Gentle)</span>
+            <div class="pill-row">
+              <button type="button" data-speed="0.5" aria-pressed="false">0.5×</button>
+              <button type="button" data-speed="1" aria-pressed="true">1×</button>
+              <button type="button" data-speed="2" aria-pressed="false">2×</button>
+              <button type="button" data-speed="4" aria-pressed="false">4×</button>
+            </div>
+          </div>
+
+          <div class="ctrl-group">
+            <span class="ctrl-label">Curriculum Stage</span>
+            <div class="pill-row">
+              <button type="button" data-stage="auto" aria-pressed="true">Auto</button>
+              <button type="button" data-stage="stand" aria-pressed="false">Stand</button>
+              <button type="button" data-stage="walk" aria-pressed="false">Walk</button>
+            </div>
+          </div>
+
+          <div class="ctrl-group">
+            <span class="ctrl-label">Policy Execution</span>
+            <div class="pill-row">
+              <button type="button" data-policy="train" aria-pressed="true">Train (PPO)</button>
+              <button type="button" data-policy="eval" aria-pressed="false">Eval Only</button>
+            </div>
+          </div>
+
+          <div class="vault">
+            <div class="vault-head">
+              <h3>Saved Model Vault</h3>
+              <span class="mono tag-disk">models/</span>
+            </div>
+            <p id="model-meta" class="model-meta">No checkpoint saved yet — auto-saves on milestones.</p>
+            <div class="vault-actions">
+              <button type="button" id="btn-save" class="btn-ok">Save Now</button>
+              <button type="button" id="btn-load" class="btn-ghost">Load</button>
+              <button type="button" id="btn-reset-weights" class="btn-danger">Reset</button>
+            </div>
+            <div class="vault-downloads">
+              <a id="dl-pt" href="/api/models/download/steel_sentinel_ppo.pt" hidden>Download .pt</a>
+              <a id="dl-onnx" href="/api/models/download/steel_sentinel_policy.onnx" hidden>Download .onnx</a>
+            </div>
+          </div>
+        </aside>
+      </div>
+    </section>
+
+    <section id="panel-manual" role="tabpanel" aria-labelledby="tab-manual" hidden>
+      <div class="hud">
+        <b>MANUAL SANDBOX</b><br>
+        A / D or ← / → walk · Shift run · W wave · ↑ jump · ↓ prone (hold)<br>
+        Drag to orbit · wheel or pinch to zoom · Open “Joints” to pose each joint.
+      </div>
+      <details class="panel" open>
+        <summary>Joints</summary>
+        <div id="sl"></div>
+      </details>
+      <div class="bar">
+        <button type="button" id="bl">◀</button>
+        <button type="button" id="bj">Jump</button>
+        <button type="button" id="bp">Prone</button>
+        <button type="button" id="bw">Wave</button>
+        <button type="button" id="br">▶</button>
+        <button type="button" id="bx">Reset</button>
+      </div>
+    </section>
+  </main>
+
   <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
   <script type="module" src="src/main.js"></script>
 </body>

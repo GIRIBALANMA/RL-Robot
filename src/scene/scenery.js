@@ -73,5 +73,30 @@ export function buildScenery(scene) {
     -520,
   );
 
-  return { sunMesh };
+  // Best-distance road marker for Walk curriculum milestones
+  const bestMarker = add(
+    scene,
+    B(0.18, 0.03, 7.2),
+    new T.MeshBasicMaterial({ color: 0x2ee59d }),
+    0,
+    0.135,
+    0,
+  );
+  bestMarker.visible = false;
+
+  // Foot ground-contact halos (Right, Left)
+  const ringGeo = new T.RingGeometry(0.24, 0.36, 24);
+  const contactRings = [0, 1].map(() => {
+    const ring = new T.Mesh(
+      ringGeo,
+      new T.MeshBasicMaterial({ color: 0x2ee59d, side: T.DoubleSide, transparent: true, opacity: 0.78 }),
+    );
+    ring.rotation.x = -Math.PI / 2;
+    ring.position.y = 0.132;
+    ring.visible = false;
+    scene.add(ring);
+    return ring;
+  });
+
+  return { sunMesh, bestMarker, contactRings };
 }
